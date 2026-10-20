@@ -133,8 +133,14 @@ static int8_t s_last_paddle;
 static char s_mark_symbol;
 static uint16_t s_unit_ms;
 
-static char s_text[TX_TEXT_CAP + 1];
-static size_t s_text_length;
+#define DISPLAY_LINE_COUNT 3
+#define DISPLAY_TEXT_CAP (DISPLAY_LINE_COUNT * (TX_TEXT_CAP + 1))
+
+// Newest decoded line is row 1; completed rows move down on overflow.
+static char s_lines[DISPLAY_LINE_COUNT][TX_TEXT_CAP + 1];
+static size_t s_line_lengths[DISPLAY_LINE_COUNT];
+static char s_display_text[DISPLAY_TEXT_CAP];
+static int16_t s_message_width;
 static char s_code[TX_CODE_CAP + 1];
 static uint8_t s_code_length;
 static uint32_t s_last_mark_end;
@@ -352,31 +358,75 @@ static void refresh_timing(void) {
 }
 
 static void draw_message(void) {
+  size_t used = 0;
+  s_display_text[0] = '\0';
+
+  for (int row = 0; row < DISPLAY_LINE_COUNT; ++row) {
+    if (row > 0) s_display_text[used++] = '\n';
+    const size_t length = s_line_lengths[row];
+    memcpy(s_display_text + used, s_lines[row], length);
+    used += length;
+  }
+  s_display_text[used] = '\0';
+
   if (s_message_layer) {
-    text_layer_set_text(s_message_layer, s_text_length ? s_text : "");
+    text_layer_set_text(s_message_layer, s_display_text);
   }
 }
 
+static int16_t measured_text_width(const char *text) {
+  const GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD);
+  const GSize size = graphics_text_layout_get_content_size(
+      text, font, GRect(0, 0, 1000, 60),
+      GTextOverflowModeWordWrap, GTextAlignmentLeft);
+  return size.w;
+}
+
+static void scroll_lines_down(void) {
+  for (int row = DISPLAY_LINE_COUNT - 1; row > 0; --row) {
+    memcpy(s_lines[row], s_lines[row - 1], sizeof(s_lines[row]));
+    s_line_lengths[row] = s_line_lengths[row - 1];
+  }
+  s_lines[0][0] = '\0';
+  s_line_lengths[0] = 0;
+}
+
 static void append_text(char value) {
-  if (s_text_length >= TX_TEXT_CAP) {
-    size_t trim = 1;
-    while (trim < s_text_length && s_text[trim] != ' ') {
-      trim++;
-    }
-    if (trim < s_text_length) trim++;
-    memmove(s_text, s_text + trim, s_text_length - trim);
-    s_text_length -= trim;
+  // Do not start a new line with a space. If the current line is full,
+  // the next actual character triggers the downward shift.
+  if (value == ' ' &&
+      (s_line_lengths[0] == 0 ||
+       s_lines[0][s_line_lengths[0] - 1] == ' ')) {
+    return;
   }
 
-  s_text[s_text_length++] = value;
-  s_text[s_text_length] = '\0';
+  char candidate[TX_TEXT_CAP + 1];
+  const size_t current_length = s_line_lengths[0];
+  if (current_length < TX_TEXT_CAP) {
+    memcpy(candidate, s_lines[0], current_length);
+    candidate[current_length] = value;
+    candidate[current_length + 1] = '\0';
+  } else {
+    candidate[0] = '\0';
+  }
+
+  if (current_length >= TX_TEXT_CAP ||
+      measured_text_width(candidate) > s_message_width) {
+    if (value == ' ') return;
+    scroll_lines_down();
+  }
+
+  if (s_line_lengths[0] < TX_TEXT_CAP) {
+    s_lines[0][s_line_lengths[0]++] = value;
+    s_lines[0][s_line_lengths[0]] = '\0';
+  }
 }
 
 static char decode_code(const char *code) {
   for (size_t i = 0; i < sizeof(s_alphabet) / sizeof(s_alphabet[0]); ++i) {
     if (!strcmp(s_alphabet[i].code, code)) return s_alphabet[i].letter;
   }
-  return '?';
+  return '*';
 }
 
 static void finish_letter(void) {
@@ -399,7 +449,8 @@ static void word_timeout(void *context) {
   s_word_timer = NULL;
   finish_letter();
 
-  if (s_text_length && s_text[s_text_length - 1] != ' ') {
+  if (s_line_lengths[0] &&
+      s_lines[0][s_line_lengths[0] - 1] != ' ') {
     append_text(' ');
     draw_message();
   }
@@ -414,8 +465,8 @@ static void prepare_mark(void) {
     }
 
     if (gap >= 7u * s_unit_ms &&
-        s_text_length &&
-        s_text[s_text_length - 1] != ' ') {
+        s_line_lengths[0] &&
+        s_lines[0][s_line_lengths[0] - 1] != ' ') {
       append_text(' ');
     }
   }
@@ -631,7 +682,8 @@ static void rail_update_proc(Layer *layer, GContext *ctx) {
 static void main_window_load(Window *window) {
   Layer *root = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(root);
-  const int16_t content_width = bounds.size.w - ACTION_BAR_WIDTH;
+  const int16_t content_width = bounds.size.w;
+  s_message_width = content_width - 6;
 
   window_set_background_color(window, APP_BLUE);
 
@@ -645,9 +697,8 @@ static void main_window_load(Window *window) {
 
   keyer_anim_reset();
 
-  // Start decoded text one 28 px font-height lower so it clears the bird.
-  // WordWrap moves a full line to the next line, aligned at the left edge
-  // (column/square 1), while the buffer retains the newest decoded text.
+  // Three explicit rows: new text stays on row 1. When it no longer fits,
+  // the previous rows shift down and the next character starts at column 1.
   s_message_layer = text_layer_create(
       GRect(3, 128,
             content_width - 6,
@@ -660,8 +711,11 @@ static void main_window_load(Window *window) {
   text_layer_set_overflow_mode(s_message_layer, GTextOverflowModeWordWrap);
   layer_add_child(root, text_layer_get_layer(s_message_layer));
 
+  // Keep only the clipped SELECT semicircle at the screen edge. The text
+  // layer uses the full width underneath it.
   s_rail_layer = layer_create(
-      GRect(content_width, 0, ACTION_BAR_WIDTH, bounds.size.h));
+      GRect(bounds.size.w - ACTION_BAR_WIDTH, 0,
+            ACTION_BAR_WIDTH, bounds.size.h));
   layer_set_update_proc(s_rail_layer, rail_update_proc);
   layer_add_child(root, s_rail_layer);
 
@@ -1092,9 +1146,10 @@ static void settings_menu_push(void) {
 static void init(void) {
   settings_load();
 
-  s_text[0] = '\0';
+  memset(s_lines, 0, sizeof(s_lines));
+  memset(s_line_lengths, 0, sizeof(s_line_lengths));
+  s_display_text[0] = '\0';
   s_code[0] = '\0';
-  s_text_length = 0;
   s_code_length = 0;
   s_last_mark_end = 0;
 
