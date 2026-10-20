@@ -7,7 +7,7 @@
 #define APP_BLUE GColorVividCerulean
 #define DEFAULT_WPM 20
 #define MIN_WPM 5
-#define MAX_WPM 35
+#define MAX_WPM 50
 #define DEFAULT_TONE_HZ 600
 #define MIN_TONE_HZ 200
 #define MAX_TONE_HZ 1500
