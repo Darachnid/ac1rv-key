@@ -360,7 +360,7 @@ static void settings_load(void) {
   s_settings.straight_key_uses_up = true;
   s_settings.tone_hz = DEFAULT_TONE_HZ;
   s_settings.tone_enabled = true;
-  s_settings.vibration_enabled = true;
+  s_settings.vibration_enabled = false;
 
   if (persist_exists(PERSIST_WPM_KEY)) {
     int value = persist_read_int(PERSIST_WPM_KEY);
