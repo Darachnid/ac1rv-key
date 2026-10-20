@@ -645,10 +645,13 @@ static void main_window_load(Window *window) {
 
   keyer_anim_reset();
 
+  // Start decoded text one 28 px font-height lower so it clears the bird.
+  // WordWrap moves a full line to the next line, aligned at the left edge
+  // (column/square 1), while the buffer retains the newest decoded text.
   s_message_layer = text_layer_create(
-      GRect(3, 100,
+      GRect(3, 128,
             content_width - 6,
-            bounds.size.h - 102));
+            bounds.size.h - 130));
   text_layer_set_background_color(s_message_layer, GColorClear);
   text_layer_set_text_color(s_message_layer, GColorWhite);
   text_layer_set_font(
