@@ -44,7 +44,7 @@ Go to **Settings → Keying mode** to switch from Paddle to **Straight key**. Th
 - The other sending button has no function in Straight Key mode.
 - SELECT still opens Settings and clears on double-click.
 
-For on-screen decoding, a press **shorter than two dit durations** is treated as a dit; one **two dit durations or longer** is treated as a dah. This threshold uses the configured WPM. Unlike paddle mode, the mark duration is under your finger's control.
+**Straight Key decoding** automatically estimates your sending rhythm within approximately **10–20 WPM**, independently of the paddle speed setting. The adaptive timing is used only to interpret press durations as dits or dahs and to detect letter and word gaps. Your physical key press directly controls when the tone starts and stops; the app does not force your sending speed into that range. The decoder starts with a 15 WPM estimate and adjusts as you send.
 
 ## Reading the display
 
