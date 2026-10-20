@@ -30,7 +30,9 @@ The main screen follows the AC1RV Key mockup:
   - top: dit/dah symbol for UP
   - middle: clipped semicircle indicating SELECT opens the menu
   - bottom: dit/dah symbol for DOWN
-- large decoded CW text
+- large decoded CW text, displayed in three rows with newest text on top; when the current row fills, rows shift downward and the next character starts at column 1
+- unknown/undecodable Morse sequences display as `*`
+- only the white SELECT semicircle remains at the right edge; dit/dah rail icons are omitted and text uses the full screen width
 
 The bird and sounder are baked as a single 14-frame PDC vector sequence
 (`resources/animations/frames.pdc`) at the Emery 200x228 coordinate system.
