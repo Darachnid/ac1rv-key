@@ -25,8 +25,8 @@ The keying engine is adapted from the send/keyer implementation in
 The main screen follows the AC1RV Key mockup:
 
 - Vivid Cerulean main field
-- Pebble `StatusBarLayer` with white foreground
-- Custom right-side rail:
+- No status bar or title/header on the sending screen
+- Transparent right-side controls with white icons on the blue background:
   - top: dit/dah symbol for UP
   - middle: clipped semicircle indicating SELECT opens the menu
   - bottom: dit/dah symbol for DOWN
