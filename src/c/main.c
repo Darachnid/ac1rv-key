@@ -1,0 +1,941 @@
+#include <pebble.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+#include <stdio.h>
+
+#define APP_BLUE GColorVividCerulean
+#define DEFAULT_WPM 20
+#define MIN_WPM 5
+#define MAX_WPM 40
+#define TONE_HZ 600
+#define TONE_VOLUME 60
+#define TX_TEXT_CAP 96
+#define TX_CODE_CAP 12
+#define TX_VIBE_MAX 10000u
+
+#define PERSIST_WPM_KEY 101
+#define PERSIST_REVERSE_KEY 102
+
+#define SPEED_ANIM_DISTANCE 42
+#define SPEED_ANIM_DURATION 180
+
+typedef struct {
+  char letter;
+  const char *code;
+} CwPair;
+
+static const CwPair s_alphabet[] = {
+  {'A', ".-"}, {'B', "-..."}, {'C', "-.-."}, {'D', "-.."},
+  {'E', "."}, {'F', "..-."}, {'G', "--."}, {'H', "...."},
+  {'I', ".."}, {'J', ".---"}, {'K', "-.-"}, {'L', ".-.."},
+  {'M', "--"}, {'N', "-."}, {'O', "---"}, {'P', ".--."},
+  {'Q', "--.-"}, {'R', ".-."}, {'S', "..."}, {'T', "-"},
+  {'U', "..-"}, {'V', "...-"}, {'W', ".--"}, {'X', "-..-"},
+  {'Y', "-.--"}, {'Z', "--.."}, {'0', "-----"}, {'1', ".----"},
+  {'2', "..---"}, {'3', "...--"}, {'4', "....-"}, {'5', "....."},
+  {'6', "-...."}, {'7', "--..."}, {'8', "---.."}, {'9', "----."},
+  {'.', ".-.-.-"}, {',', "--..--"}, {'?', "..--.."},
+  {'/', "-..-."}, {':', "---..."}, {'=', "-...-"},
+  {'+', ".-.-."}, {'-', "-....-"}, {'@', ".--.-."},
+  {'\'', ".----."}
+};
+
+typedef struct {
+  uint16_t wpm;
+  bool reverse_paddles;
+} Settings;
+
+static Settings s_settings;
+
+// Main keyer window
+static Window *s_main_window;
+static StatusBarLayer *s_status_bar;
+static TextLayer *s_title_layer;
+static TextLayer *s_message_layer;
+static Layer *s_art_layer;
+static Layer *s_rail_layer;
+
+// Settings menu
+static Window *s_menu_window;
+static MenuLayer *s_menu_layer;
+static MenuLayerCallbacks s_menu_callbacks;
+
+// Speed editor
+static Window *s_speed_window;
+static TextLayer *s_speed_text_layer;
+static char s_speed_text[16];
+static char s_speed_next_text[16];
+static int16_t s_speed_anim_direction;
+
+// Paddle choice dialog
+static Window *s_paddle_window;
+static TextLayer *s_paddle_prompt_layer;
+static ActionBarLayer *s_paddle_action_bar;
+static GBitmap *s_dit_icon;
+static GBitmap *s_dah_icon;
+
+// Keyer timers
+static AppTimer *s_mark_timer;
+static AppTimer *s_gap_timer;
+static AppTimer *s_letter_timer;
+static AppTimer *s_word_timer;
+
+static bool s_active;
+static bool s_up_held;
+static bool s_down_held;
+static bool s_up_pending;
+static bool s_down_pending;
+static bool s_paddle_mark;
+static int8_t s_last_paddle;
+static char s_mark_symbol;
+static uint16_t s_unit_ms;
+
+static char s_text[TX_TEXT_CAP + 1];
+static size_t s_text_length;
+static char s_code[TX_CODE_CAP + 1];
+static uint8_t s_code_length;
+static uint32_t s_last_mark_end;
+static uint32_t s_vibration_duration;
+
+static uint32_t now_ms(void) {
+  time_t seconds = 0;
+  uint16_t millis = 0;
+  time_ms(&seconds, &millis);
+  return (uint32_t)seconds * 1000u + millis;
+}
+
+static void cancel_timer(AppTimer **timer) {
+  if (*timer) {
+    app_timer_cancel(*timer);
+    *timer = NULL;
+  }
+}
+
+static void settings_load(void) {
+  s_settings.wpm = DEFAULT_WPM;
+  s_settings.reverse_paddles = false;
+
+  if (persist_exists(PERSIST_WPM_KEY)) {
+    int value = persist_read_int(PERSIST_WPM_KEY);
+    if (value >= MIN_WPM && value <= MAX_WPM) {
+      s_settings.wpm = (uint16_t)value;
+    }
+  }
+
+  if (persist_exists(PERSIST_REVERSE_KEY)) {
+    s_settings.reverse_paddles = persist_read_bool(PERSIST_REVERSE_KEY);
+  }
+
+  s_unit_ms = (uint16_t)(1200u / s_settings.wpm);
+}
+
+static void settings_save(void) {
+  persist_write_int(PERSIST_WPM_KEY, s_settings.wpm);
+  persist_write_bool(PERSIST_REVERSE_KEY, s_settings.reverse_paddles);
+}
+
+static void refresh_timing(void) {
+  s_unit_ms = (uint16_t)(1200u / s_settings.wpm);
+  if (!s_unit_ms) s_unit_ms = 1;
+}
+
+static void draw_message(void) {
+  if (s_message_layer) {
+    text_layer_set_text(s_message_layer, s_text_length ? s_text : "");
+  }
+}
+
+static void append_text(char value) {
+  if (s_text_length >= TX_TEXT_CAP) {
+    size_t trim = 1;
+    while (trim < s_text_length && s_text[trim] != ' ') {
+      trim++;
+    }
+    if (trim < s_text_length) trim++;
+    memmove(s_text, s_text + trim, s_text_length - trim);
+    s_text_length -= trim;
+  }
+
+  s_text[s_text_length++] = value;
+  s_text[s_text_length] = '\0';
+}
+
+static char decode_code(const char *code) {
+  for (size_t i = 0; i < sizeof(s_alphabet) / sizeof(s_alphabet[0]); ++i) {
+    if (!strcmp(s_alphabet[i].code, code)) return s_alphabet[i].letter;
+  }
+  return '?';
+}
+
+static void finish_letter(void) {
+  if (!s_code_length) return;
+
+  append_text(decode_code(s_code));
+  s_code_length = 0;
+  s_code[0] = '\0';
+  draw_message();
+}
+
+static void letter_timeout(void *context) {
+  (void)context;
+  s_letter_timer = NULL;
+  finish_letter();
+}
+
+static void word_timeout(void *context) {
+  (void)context;
+  s_word_timer = NULL;
+  finish_letter();
+
+  if (s_text_length && s_text[s_text_length - 1] != ' ') {
+    append_text(' ');
+    draw_message();
+  }
+}
+
+static void prepare_mark(void) {
+  if (s_last_mark_end && s_code_length) {
+    const uint32_t gap = now_ms() - s_last_mark_end;
+
+    if (gap >= 3u * s_unit_ms) {
+      finish_letter();
+    }
+
+    if (gap >= 7u * s_unit_ms &&
+        s_text_length &&
+        s_text[s_text_length - 1] != ' ') {
+      append_text(' ');
+    }
+  }
+
+  cancel_timer(&s_letter_timer);
+  cancel_timer(&s_word_timer);
+}
+
+static void schedule_decode(void) {
+  s_last_mark_end = now_ms();
+
+  cancel_timer(&s_letter_timer);
+  cancel_timer(&s_word_timer);
+
+  s_letter_timer = app_timer_register(3u * s_unit_ms, letter_timeout, NULL);
+  s_word_timer = app_timer_register(7u * s_unit_ms, word_timeout, NULL);
+}
+
+static void record_symbol(char symbol) {
+  if (s_code_length < TX_CODE_CAP) {
+    s_code[s_code_length++] = symbol;
+    s_code[s_code_length] = '\0';
+  } else {
+    s_code_length = TX_CODE_CAP;
+  }
+
+  schedule_decode();
+}
+
+static void key_down(uint32_t duration_ms) {
+  speaker_stop();
+
+  const uint32_t tone_ms =
+      duration_ms > TX_VIBE_MAX ? TX_VIBE_MAX : duration_ms;
+
+  if (!speaker_play_tone(TONE_HZ, tone_ms, TONE_VOLUME,
+                         SpeakerWaveformSquare)) {
+    APP_LOG(APP_LOG_LEVEL_WARNING, "Tone failed");
+  }
+
+  s_vibration_duration = tone_ms;
+  VibePattern vibe = {
+    .durations = &s_vibration_duration,
+    .num_segments = 1
+  };
+  vibes_enqueue_custom_pattern(vibe);
+}
+
+static void key_up(void) {
+  speaker_stop();
+  vibes_cancel();
+}
+
+static void begin_paddle(void);
+
+static void gap_done(void *context) {
+  (void)context;
+  s_gap_timer = NULL;
+  begin_paddle();
+}
+
+static void mark_done(void *context) {
+  (void)context;
+  s_mark_timer = NULL;
+
+  if (!s_active || !s_paddle_mark) return;
+
+  s_paddle_mark = false;
+  key_up();
+  record_symbol(s_mark_symbol);
+
+  s_gap_timer = app_timer_register(s_unit_ms, gap_done, NULL);
+}
+
+static void begin_paddle(void) {
+  if (!s_active || s_paddle_mark || s_gap_timer) return;
+
+  const bool up = s_up_pending || s_up_held;
+  const bool down = s_down_pending || s_down_held;
+
+  if (!up && !down) return;
+
+  // Simple squeeze keyer: when both are held, alternate elements.
+  const bool choose_up = (up && down) ? s_last_paddle != 1 : up;
+
+  if (choose_up) {
+    s_up_pending = false;
+  } else {
+    s_down_pending = false;
+  }
+
+  s_last_paddle = choose_up ? 1 : -1;
+
+  // Normal: UP=dit, DOWN=dah. Reversed swaps the physical paddles.
+  const bool dit = choose_up != s_settings.reverse_paddles;
+  const uint32_t duration = dit ? s_unit_ms : 3u * s_unit_ms;
+
+  s_mark_symbol = dit ? '.' : '-';
+  s_paddle_mark = true;
+
+  prepare_mark();
+  key_down(duration);
+
+  s_mark_timer = app_timer_register(duration, mark_done, NULL);
+  if (!s_mark_timer) {
+    s_paddle_mark = false;
+    key_up();
+  }
+}
+
+static void up_down(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+
+  s_up_held = true;
+  s_up_pending = true;
+  begin_paddle();
+}
+
+static void up_up(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  s_up_held = false;
+}
+
+static void down_down(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+
+  s_down_held = true;
+  s_down_pending = true;
+  begin_paddle();
+}
+
+static void down_up(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  s_down_held = false;
+}
+
+static void settings_menu_push(void);
+
+static void select_click(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  settings_menu_push();
+}
+
+static void main_click_config(void *context) {
+  (void)context;
+
+  window_raw_click_subscribe(BUTTON_ID_UP, up_down, up_up, NULL);
+  window_raw_click_subscribe(BUTTON_ID_DOWN, down_down, down_up, NULL);
+  window_single_click_subscribe(BUTTON_ID_SELECT, select_click);
+}
+
+static void stop_keying(void) {
+  s_active = false;
+
+  cancel_timer(&s_mark_timer);
+  cancel_timer(&s_gap_timer);
+  cancel_timer(&s_letter_timer);
+  cancel_timer(&s_word_timer);
+
+  s_up_held = false;
+  s_down_held = false;
+  s_up_pending = false;
+  s_down_pending = false;
+  s_paddle_mark = false;
+
+  key_up();
+}
+
+static void rail_update_proc(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+
+  graphics_context_set_fill_color(ctx, APP_BLUE);
+
+  // UP paddle indicator
+  if (!s_settings.reverse_paddles) {
+    graphics_fill_circle(ctx, GPoint(bounds.size.w / 2, 50), 12);
+  } else {
+    graphics_fill_rect(ctx,
+                       GRect(5, 46, bounds.size.w - 10, 8),
+                       3,
+                       GCornersAll);
+  }
+
+  // SELECT/menu affordance: a circle whose center is beyond the screen edge,
+  // leaving a clipped semicircle visible.
+  graphics_fill_circle(ctx,
+                       GPoint(bounds.size.w + 3, bounds.size.h / 2),
+                       13);
+
+  // DOWN paddle indicator
+  if (!s_settings.reverse_paddles) {
+    graphics_fill_rect(ctx,
+                       GRect(5, bounds.size.h - 50,
+                             bounds.size.w - 10, 8),
+                       3,
+                       GCornersAll);
+  } else {
+    graphics_fill_circle(ctx,
+                         GPoint(bounds.size.w / 2, bounds.size.h - 46),
+                         12);
+  }
+}
+
+static void art_update_proc(Layer *layer, GContext *ctx) {
+  (void)layer;
+  (void)ctx;
+
+  // Deliberately empty until the final bird/sounder PDC sequence is added.
+  // Keeping the art in its own Layer means animation invalidates only this
+  // region and can never delay Morse key timing.
+}
+
+static void main_window_load(Window *window) {
+  Layer *root = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(root);
+  const int16_t content_width = bounds.size.w - ACTION_BAR_WIDTH;
+
+  window_set_background_color(window, APP_BLUE);
+
+  s_status_bar = status_bar_layer_create();
+  status_bar_layer_set_colors(s_status_bar, APP_BLUE, GColorWhite);
+  status_bar_layer_set_separator_mode(
+      s_status_bar, StatusBarLayerSeparatorModeNone);
+
+  Layer *status_layer = status_bar_layer_get_layer(s_status_bar);
+  layer_set_frame(status_layer,
+                  GRect(0, 0, content_width, STATUS_BAR_LAYER_HEIGHT));
+  layer_add_child(root, status_layer);
+
+  s_title_layer = text_layer_create(
+      GRect(55, -2, content_width - 60, STATUS_BAR_LAYER_HEIGHT + 4));
+  text_layer_set_background_color(s_title_layer, GColorClear);
+  text_layer_set_text_color(s_title_layer, GColorWhite);
+  text_layer_set_font(
+      s_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_text_alignment(s_title_layer, GTextAlignmentCenter);
+  text_layer_set_text(s_title_layer, "AC1RV Key");
+  layer_add_child(root, text_layer_get_layer(s_title_layer));
+
+  s_art_layer = layer_create(
+      GRect(0, STATUS_BAR_LAYER_HEIGHT + 4, content_width, 96));
+  layer_set_update_proc(s_art_layer, art_update_proc);
+  layer_add_child(root, s_art_layer);
+
+  s_message_layer = text_layer_create(
+      GRect(3, STATUS_BAR_LAYER_HEIGHT + 100,
+            content_width - 6,
+            bounds.size.h - STATUS_BAR_LAYER_HEIGHT - 102));
+  text_layer_set_background_color(s_message_layer, GColorClear);
+  text_layer_set_text_color(s_message_layer, GColorWhite);
+  text_layer_set_font(
+      s_message_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
+  text_layer_set_text_alignment(s_message_layer, GTextAlignmentLeft);
+  text_layer_set_overflow_mode(s_message_layer, GTextOverflowModeWordWrap);
+  layer_add_child(root, text_layer_get_layer(s_message_layer));
+
+  s_rail_layer = layer_create(
+      GRect(content_width, 0, ACTION_BAR_WIDTH, bounds.size.h));
+  layer_set_update_proc(s_rail_layer, rail_update_proc);
+  layer_add_child(root, s_rail_layer);
+
+  draw_message();
+}
+
+static void main_window_unload(Window *window) {
+  (void)window;
+  stop_keying();
+
+  if (s_status_bar) {
+    status_bar_layer_destroy(s_status_bar);
+    s_status_bar = NULL;
+  }
+
+  if (s_title_layer) {
+    text_layer_destroy(s_title_layer);
+    s_title_layer = NULL;
+  }
+
+  if (s_message_layer) {
+    text_layer_destroy(s_message_layer);
+    s_message_layer = NULL;
+  }
+
+  if (s_art_layer) {
+    layer_destroy(s_art_layer);
+    s_art_layer = NULL;
+  }
+
+  if (s_rail_layer) {
+    layer_destroy(s_rail_layer);
+    s_rail_layer = NULL;
+  }
+}
+
+static void main_window_appear(Window *window) {
+  (void)window;
+  refresh_timing();
+  s_active = true;
+
+  if (s_rail_layer) {
+    layer_mark_dirty(s_rail_layer);
+  }
+}
+
+static void main_window_disappear(Window *window) {
+  (void)window;
+  stop_keying();
+}
+
+// ---------------------------------------------------------------------------
+// Speed editor
+// ---------------------------------------------------------------------------
+
+static void speed_in_stopped(Animation *animation,
+                             bool finished,
+                             void *context) {
+  (void)finished;
+  (void)context;
+  animation_destroy(animation);
+}
+
+static void speed_out_stopped(Animation *animation,
+                              bool finished,
+                              void *context) {
+  (void)finished;
+  (void)context;
+
+  animation_destroy(animation);
+
+  text_layer_set_text(s_speed_text_layer, s_speed_next_text);
+
+  Layer *text_layer = text_layer_get_layer(s_speed_text_layer);
+  GRect final_frame = layer_get_frame(text_layer);
+  GRect start_frame = final_frame;
+
+  start_frame.origin.x += s_speed_anim_direction * SPEED_ANIM_DISTANCE;
+  final_frame.origin.x = 0;
+
+  layer_set_frame(text_layer, start_frame);
+
+  PropertyAnimation *in_prop =
+      property_animation_create_layer_frame(
+          text_layer, &start_frame, &final_frame);
+
+  Animation *in_anim = property_animation_get_animation(in_prop);
+  animation_set_curve(in_anim, AnimationCurveEaseInOut);
+  animation_set_duration(in_anim, SPEED_ANIM_DURATION);
+  animation_set_handlers(in_anim, (AnimationHandlers) {
+    .stopped = speed_in_stopped
+  }, NULL);
+  animation_schedule(in_anim);
+}
+
+static void animate_speed_change(int direction) {
+  if (!s_speed_text_layer) return;
+
+  snprintf(s_speed_next_text,
+           sizeof(s_speed_next_text),
+           "%u WPM",
+           (unsigned)s_settings.wpm);
+
+  s_speed_anim_direction = direction;
+
+  Layer *text_layer = text_layer_get_layer(s_speed_text_layer);
+  GRect start = layer_get_frame(text_layer);
+  GRect finish = start;
+
+  finish.origin.x -= direction * SPEED_ANIM_DISTANCE;
+
+  PropertyAnimation *out_prop =
+      property_animation_create_layer_frame(text_layer, &start, &finish);
+
+  Animation *out_anim = property_animation_get_animation(out_prop);
+  animation_set_curve(out_anim, AnimationCurveEaseInOut);
+  animation_set_duration(out_anim, SPEED_ANIM_DURATION);
+  animation_set_handlers(out_anim, (AnimationHandlers) {
+    .stopped = speed_out_stopped
+  }, NULL);
+  animation_schedule(out_anim);
+}
+
+static void speed_up_click(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+
+  if (s_settings.wpm >= MAX_WPM) return;
+
+  s_settings.wpm++;
+  settings_save();
+  refresh_timing();
+  animate_speed_change(1);
+}
+
+static void speed_down_click(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+
+  if (s_settings.wpm <= MIN_WPM) return;
+
+  s_settings.wpm--;
+  settings_save();
+  refresh_timing();
+  animate_speed_change(-1);
+}
+
+static void speed_click_config(void *context) {
+  (void)context;
+  window_single_repeating_click_subscribe(
+      BUTTON_ID_UP, 140, speed_up_click);
+  window_single_repeating_click_subscribe(
+      BUTTON_ID_DOWN, 140, speed_down_click);
+}
+
+static void speed_window_load(Window *window) {
+  Layer *root = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(root);
+
+  window_set_background_color(window, APP_BLUE);
+
+  snprintf(s_speed_text,
+           sizeof(s_speed_text),
+           "%u WPM",
+           (unsigned)s_settings.wpm);
+
+  s_speed_text_layer = text_layer_create(
+      GRect(0, bounds.size.h / 2 - 28, bounds.size.w, 56));
+  text_layer_set_background_color(s_speed_text_layer, GColorClear);
+  text_layer_set_text_color(s_speed_text_layer, GColorWhite);
+  text_layer_set_font(
+      s_speed_text_layer,
+      fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
+  text_layer_set_text_alignment(
+      s_speed_text_layer, GTextAlignmentCenter);
+  text_layer_set_text(s_speed_text_layer, s_speed_text);
+  layer_add_child(root, text_layer_get_layer(s_speed_text_layer));
+}
+
+static void speed_window_unload(Window *window) {
+  text_layer_destroy(s_speed_text_layer);
+  s_speed_text_layer = NULL;
+
+  window_destroy(window);
+  s_speed_window = NULL;
+
+  if (s_menu_layer) {
+    menu_layer_reload_data(s_menu_layer);
+  }
+}
+
+static void speed_window_push(void) {
+  if (s_speed_window) return;
+
+  s_speed_window = window_create();
+  window_set_click_config_provider(s_speed_window, speed_click_config);
+  window_set_window_handlers(s_speed_window, (WindowHandlers) {
+    .load = speed_window_load,
+    .unload = speed_window_unload
+  });
+  window_stack_push(s_speed_window, true);
+}
+
+// ---------------------------------------------------------------------------
+// Paddle choice dialog
+// ---------------------------------------------------------------------------
+
+static void paddle_choose_normal(ClickRecognizerRef recognizer,
+                                 void *context) {
+  (void)recognizer;
+  (void)context;
+
+  s_settings.reverse_paddles = false;
+  settings_save();
+  window_stack_pop(true);
+}
+
+static void paddle_choose_reversed(ClickRecognizerRef recognizer,
+                                   void *context) {
+  (void)recognizer;
+  (void)context;
+
+  s_settings.reverse_paddles = true;
+  settings_save();
+  window_stack_pop(true);
+}
+
+static void paddle_choice_click_config(void *context) {
+  (void)context;
+  window_single_click_subscribe(
+      BUTTON_ID_UP, paddle_choose_normal);
+  window_single_click_subscribe(
+      BUTTON_ID_DOWN, paddle_choose_reversed);
+}
+
+static void paddle_window_load(Window *window) {
+  Layer *root = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(root);
+
+  window_set_background_color(window, GColorWhite);
+
+  s_paddle_prompt_layer = text_layer_create(
+      GRect(10, 58,
+            bounds.size.w - ACTION_BAR_WIDTH - 20,
+            112));
+  text_layer_set_background_color(
+      s_paddle_prompt_layer, GColorClear);
+  text_layer_set_text_color(
+      s_paddle_prompt_layer, GColorBlack);
+  text_layer_set_font(
+      s_paddle_prompt_layer,
+      fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  text_layer_set_text_alignment(
+      s_paddle_prompt_layer, GTextAlignmentCenter);
+  text_layer_set_text(
+      s_paddle_prompt_layer,
+      "What should\nUP send?");
+  layer_add_child(root,
+                  text_layer_get_layer(s_paddle_prompt_layer));
+
+  s_dit_icon =
+      gbitmap_create_with_resource(RESOURCE_ID_ICON_DIT);
+  s_dah_icon =
+      gbitmap_create_with_resource(RESOURCE_ID_ICON_DAH);
+
+  s_paddle_action_bar = action_bar_layer_create();
+  action_bar_layer_set_background_color(
+      s_paddle_action_bar, GColorWhite);
+  action_bar_layer_set_icon(
+      s_paddle_action_bar, BUTTON_ID_UP, s_dit_icon);
+  action_bar_layer_set_icon(
+      s_paddle_action_bar, BUTTON_ID_DOWN, s_dah_icon);
+  action_bar_layer_set_icon_press_animation(
+      s_paddle_action_bar,
+      BUTTON_ID_UP,
+      ActionBarLayerIconPressAnimationMoveLeft);
+  action_bar_layer_set_icon_press_animation(
+      s_paddle_action_bar,
+      BUTTON_ID_DOWN,
+      ActionBarLayerIconPressAnimationMoveLeft);
+  action_bar_layer_set_click_config_provider(
+      s_paddle_action_bar,
+      paddle_choice_click_config);
+  action_bar_layer_add_to_window(
+      s_paddle_action_bar, window);
+}
+
+static void paddle_window_unload(Window *window) {
+  text_layer_destroy(s_paddle_prompt_layer);
+  s_paddle_prompt_layer = NULL;
+
+  if (s_paddle_action_bar) {
+    action_bar_layer_remove_from_window(s_paddle_action_bar);
+    action_bar_layer_destroy(s_paddle_action_bar);
+    s_paddle_action_bar = NULL;
+  }
+
+  if (s_dit_icon) {
+    gbitmap_destroy(s_dit_icon);
+    s_dit_icon = NULL;
+  }
+
+  if (s_dah_icon) {
+    gbitmap_destroy(s_dah_icon);
+    s_dah_icon = NULL;
+  }
+
+  window_destroy(window);
+  s_paddle_window = NULL;
+
+  if (s_menu_layer) {
+    menu_layer_reload_data(s_menu_layer);
+  }
+}
+
+static void paddle_window_push(void) {
+  if (s_paddle_window) return;
+
+  s_paddle_window = window_create();
+  window_set_window_handlers(s_paddle_window, (WindowHandlers) {
+    .load = paddle_window_load,
+    .unload = paddle_window_unload
+  });
+  window_stack_push(s_paddle_window, true);
+}
+
+// ---------------------------------------------------------------------------
+// Settings MenuLayer
+// ---------------------------------------------------------------------------
+
+static uint16_t menu_get_num_rows(MenuLayer *menu_layer,
+                                  uint16_t section_index,
+                                  void *context) {
+  (void)menu_layer;
+  (void)section_index;
+  (void)context;
+  return 2;
+}
+
+static void menu_draw_row(GContext *ctx,
+                          const Layer *cell_layer,
+                          MenuIndex *cell_index,
+                          void *context) {
+  (void)context;
+
+  char subtitle[32];
+
+  if (cell_index->row == 0) {
+    snprintf(subtitle,
+             sizeof(subtitle),
+             "%u WPM",
+             (unsigned)s_settings.wpm);
+    menu_cell_basic_draw(
+        ctx, cell_layer, "Speed", subtitle, NULL);
+  } else {
+    snprintf(subtitle,
+             sizeof(subtitle),
+             "%s",
+             s_settings.reverse_paddles
+                 ? "UP dah / DOWN dit"
+                 : "UP dit / DOWN dah");
+
+    menu_cell_basic_draw(
+        ctx, cell_layer, "Paddles", subtitle, NULL);
+  }
+}
+
+static void menu_select(MenuLayer *menu_layer,
+                        MenuIndex *cell_index,
+                        void *context) {
+  (void)menu_layer;
+  (void)context;
+
+  if (cell_index->row == 0) {
+    speed_window_push();
+  } else {
+    paddle_window_push();
+  }
+}
+
+static void menu_window_load(Window *window) {
+  Layer *root = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(root);
+
+  s_menu_callbacks = (MenuLayerCallbacks) {
+    .get_num_rows = menu_get_num_rows,
+    .draw_row = menu_draw_row,
+    .select_click = menu_select
+  };
+
+  s_menu_layer = menu_layer_create(bounds);
+  menu_layer_set_callbacks(
+      s_menu_layer, NULL, s_menu_callbacks);
+  menu_layer_set_normal_colors(
+      s_menu_layer, GColorWhite, GColorBlack);
+  menu_layer_set_highlight_colors(
+      s_menu_layer, APP_BLUE, GColorWhite);
+  menu_layer_set_click_config_onto_window(
+      s_menu_layer, window);
+  menu_layer_pad_bottom_enable(s_menu_layer, true);
+
+  layer_add_child(root, menu_layer_get_layer(s_menu_layer));
+}
+
+static void menu_window_unload(Window *window) {
+  menu_layer_destroy(s_menu_layer);
+  s_menu_layer = NULL;
+
+  window_destroy(window);
+  s_menu_window = NULL;
+
+  if (s_rail_layer) {
+    layer_mark_dirty(s_rail_layer);
+  }
+}
+
+static void settings_menu_push(void) {
+  if (s_menu_window) return;
+
+  s_menu_window = window_create();
+  window_set_window_handlers(s_menu_window, (WindowHandlers) {
+    .load = menu_window_load,
+    .unload = menu_window_unload
+  });
+  window_stack_push(s_menu_window, true);
+}
+
+// ---------------------------------------------------------------------------
+// App lifecycle
+// ---------------------------------------------------------------------------
+
+static void init(void) {
+  settings_load();
+
+  s_text[0] = '\0';
+  s_code[0] = '\0';
+  s_text_length = 0;
+  s_code_length = 0;
+  s_last_mark_end = 0;
+
+  s_main_window = window_create();
+  window_set_click_config_provider(
+      s_main_window, main_click_config);
+  window_set_window_handlers(
+      s_main_window, (WindowHandlers) {
+        .load = main_window_load,
+        .unload = main_window_unload,
+        .appear = main_window_appear,
+        .disappear = main_window_disappear
+      });
+
+  window_stack_push(s_main_window, true);
+}
+
+static void deinit(void) {
+  stop_keying();
+
+  if (s_main_window) {
+    window_destroy(s_main_window);
+    s_main_window = NULL;
+  }
+}
+
+int main(void) {
+  init();
+  app_event_loop();
+  deinit();
+}

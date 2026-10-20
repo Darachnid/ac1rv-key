@@ -1,0 +1,30 @@
+{
+  "name": "ac1rv-key",
+  "author": "Darachnid",
+  "version": "0.1.0",
+  "private": true,
+  "keywords": ["pebble-app", "morse-code", "cw", "keyer"],
+  "pebble": {
+    "displayName": "AC1RV Key",
+    "uuid": "c35c36ea-e184-4fb0-9e3f-b5a1c6d2f9a4",
+    "sdkVersion": "3",
+    "targetPlatforms": ["emery"],
+    "watchapp": {
+      "watchface": false
+    },
+    "resources": {
+      "media": [
+        {
+          "type": "bitmap",
+          "name": "ICON_DIT",
+          "file": "images/dit.png"
+        },
+        {
+          "type": "bitmap",
+          "name": "ICON_DAH",
+          "file": "images/dah.png"
+        }
+      ]
+    }
+  }
+}
