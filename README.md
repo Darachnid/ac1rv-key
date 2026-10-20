@@ -17,8 +17,8 @@ A Pebble Time 2 (Emery) CW keyer with a Pebble-native settings UI and a custom s
   - Tone on/off
   - Vibration on/off; enabling vibration shows a battery-use warning
   - Paddle order: choose whether UP sends dit or dah
-- Tone and vibration can be enabled together or independently
-- Square-wave sidetone and haptic keying feedback
+- Tone and vibration can be enabled together or independently; vibration defaults off and requires acknowledging its battery-use warning to enable
+- Square-wave sidetone and optional haptic keying feedback
 - Live Morse decoding on the sending screen
 - Settings persist on-watch
 
