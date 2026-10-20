@@ -1,4 +1,6 @@
-# AC1RV Key
+# AC1RV Key (Morse Bird)
+
+**[User Guide: How to use Morse Bird](USER_GUIDE.md)** — watch controls, straight key, tone and vibration, three-line display, and troubleshooting.
 
 A Pebble Time 2 (Emery) CW keyer with a Pebble-native settings UI and a custom sending screen.
 
