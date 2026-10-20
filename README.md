@@ -32,6 +32,7 @@ The main screen follows the AC1RV Key mockup:
 - Vivid Cerulean main field
 - No status bar or title/header on the sending screen
 - Small white clipped semicircle at the right edge indicating SELECT opens the menu; no sidebar bar or dit/dah icons
+- SELECT single-click opens settings; double-click clears the decoded text and any pending undecoded Morse
 - large decoded CW text, displayed in three rows with newest text on top; when the current row fills, rows shift downward and the next character starts at column 1
 - unknown/undecodable Morse sequences display as `*`
 - only the white SELECT semicircle remains at the right edge; dit/dah rail icons are omitted and text uses the full screen width
