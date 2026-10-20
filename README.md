@@ -10,7 +10,7 @@ A Pebble Time 2 (Emery) CW keyer with a Pebble-native settings UI and a custom s
 - Squeeze both paddles to alternate
 - SELECT opens the on-watch settings menu
 - Settings:
-  - Speed (5–40 WPM), with animated value changes
+  - Speed (5–35 WPM), with animated value changes
   - Paddle order (choose whether UP sends dit or dah)
 - 600 Hz square-wave sidetone
 - Haptic keying feedback
