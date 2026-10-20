@@ -1,4 +1,4 @@
-# AC1RV Key (Morse Bird)
+# Morse Bird
 
 **[User Guide: How to use Morse Bird](USER_GUIDE.md)** — watch controls, straight key, tone and vibration, three-line display, and troubleshooting.
 
@@ -29,7 +29,7 @@ The keying engine is adapted from the send/keyer implementation in
 
 ## UI
 
-The main screen follows the AC1RV Key mockup:
+The main screen uses the Morse Bird design:
 
 - Vivid Cerulean main field
 - No status bar or title/header on the sending screen
