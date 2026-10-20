@@ -62,7 +62,6 @@ static Window *s_main_window;
 static StatusBarLayer *s_status_bar;
 static TextLayer *s_title_layer;
 static TextLayer *s_message_layer;
-static Layer *s_art_layer;
 static BitmapLayer *s_art_bitmap_layer;
 static Layer *s_rail_layer;
 
@@ -75,10 +74,25 @@ typedef enum {
   KEYER_ANIM_RETURN
 } KeyerAnimPhase;
 
-static GDrawCommandSequence *s_keyer_sequence;
-static GBitmapSequence *s_keyer_bitmap_sequence;
 static GBitmap *s_keyer_bitmap;
-static bool s_keyer_uses_bitmap;
+
+static const uint32_t s_keyer_frame_resources[KEYER_FRAME_COUNT] = {
+  RESOURCE_ID_KEYER_FRAME_001,
+  RESOURCE_ID_KEYER_FRAME_002,
+  RESOURCE_ID_KEYER_FRAME_003,
+  RESOURCE_ID_KEYER_FRAME_004,
+  RESOURCE_ID_KEYER_FRAME_005,
+  RESOURCE_ID_KEYER_FRAME_006,
+  RESOURCE_ID_KEYER_FRAME_007,
+  RESOURCE_ID_KEYER_FRAME_008,
+  RESOURCE_ID_KEYER_FRAME_009,
+  RESOURCE_ID_KEYER_FRAME_010,
+  RESOURCE_ID_KEYER_FRAME_011,
+  RESOURCE_ID_KEYER_FRAME_012,
+  RESOURCE_ID_KEYER_FRAME_013,
+  RESOURCE_ID_KEYER_FRAME_014
+};
+
 static uint8_t s_keyer_frame = KEYER_FRAME_HOME;
 static uint8_t s_keyer_target = KEYER_FRAME_HOME;
 static KeyerAnimPhase s_keyer_phase = KEYER_ANIM_IDLE;
@@ -153,30 +167,24 @@ static void keyer_anim_step(void *context);
 static void keyer_idle_return(void *context);
 
 static bool keyer_bitmap_show_frame(uint8_t frame_index) {
-  if (!s_keyer_bitmap_sequence || !s_keyer_bitmap ||
-      frame_index >= KEYER_FRAME_COUNT) {
+  if (frame_index >= KEYER_FRAME_COUNT || !s_art_bitmap_layer) {
     return false;
   }
 
-  // GBitmapSequence is sequential. For deterministic random access, restart
-  // the APNG and decode forward to the requested frame. This also correctly
-  // initializes frame 0; update_bitmap_by_elapsed() is not a substitute for
-  // decoding the first frame.
-  if (!gbitmap_sequence_restart(s_keyer_bitmap_sequence)) {
+  GBitmap *next =
+      gbitmap_create_with_resource(s_keyer_frame_resources[frame_index]);
+  if (!next) {
     return false;
   }
 
-  uint32_t ignored_delay = 0;
-  for (uint8_t i = 0; i <= frame_index; ++i) {
-    if (!gbitmap_sequence_update_bitmap_next_frame(
-            s_keyer_bitmap_sequence, s_keyer_bitmap, &ignored_delay)) {
-      return false;
-    }
-  }
+  GBitmap *old = s_keyer_bitmap;
+  s_keyer_bitmap = next;
 
-  if (s_art_bitmap_layer) {
-    bitmap_layer_set_bitmap(s_art_bitmap_layer, s_keyer_bitmap);
-    layer_mark_dirty(bitmap_layer_get_layer(s_art_bitmap_layer));
+  bitmap_layer_set_bitmap(s_art_bitmap_layer, s_keyer_bitmap);
+  layer_mark_dirty(bitmap_layer_get_layer(s_art_bitmap_layer));
+
+  if (old) {
+    gbitmap_destroy(old);
   }
 
   return true;
@@ -187,14 +195,10 @@ static void keyer_anim_draw_frame(uint8_t frame_index) {
 
   s_keyer_frame = frame_index;
 
-  if (s_keyer_uses_bitmap) {
-    if (!keyer_bitmap_show_frame(frame_index)) {
-      APP_LOG(APP_LOG_LEVEL_ERROR,
-              "Could not render APNG frame %u",
-              (unsigned)frame_index);
-    }
-  } else if (s_art_layer) {
-    layer_mark_dirty(s_art_layer);
+  if (!keyer_bitmap_show_frame(frame_index)) {
+    APP_LOG(APP_LOG_LEVEL_ERROR,
+            "Could not load keyer frame %u",
+            (unsigned)(frame_index + 1));
   }
 }
 
@@ -629,20 +633,6 @@ static void rail_update_proc(Layer *layer, GContext *ctx) {
   }
 }
 
-static void art_update_proc(Layer *layer, GContext *ctx) {
-  (void)layer;
-
-  if (!s_keyer_sequence) return;
-
-  GDrawCommandFrame *frame =
-      gdraw_command_sequence_get_frame_by_index(
-          s_keyer_sequence, s_keyer_frame);
-  if (!frame) return;
-
-  gdraw_command_frame_draw(
-      ctx, s_keyer_sequence, frame, GPointZero);
-}
-
 static void main_window_load(Window *window) {
   Layer *root = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(root);
@@ -670,80 +660,13 @@ static void main_window_load(Window *window) {
   text_layer_set_text(s_title_layer, "AC1RV Key");
   layer_add_child(root, text_layer_get_layer(s_title_layer));
 
-  // KEYER_SEQUENCE is a raw resource. Prefer APNG/PNG so the watch renders
-  // exactly the same artwork as Inkscape/browser. If the resource is still
-  // the old PDC, retain the legacy renderer as a fallback.
-  s_keyer_bitmap_sequence =
-      gbitmap_sequence_create_with_resource(
-          RESOURCE_ID_KEYER_SEQUENCE);
-
-  if (s_keyer_bitmap_sequence) {
-    gbitmap_sequence_set_play_count(s_keyer_bitmap_sequence, 1);
-
-    const uint32_t frame_count =
-        gbitmap_sequence_get_total_num_frames(s_keyer_bitmap_sequence);
-    const GSize frame_size =
-        gbitmap_sequence_get_bitmap_size(s_keyer_bitmap_sequence);
-
-    APP_LOG(APP_LOG_LEVEL_INFO,
-            "Keyer APNG: %lu frames, %dx%d",
-            (unsigned long)frame_count,
-            frame_size.w,
-            frame_size.h);
-
-    if (frame_count >= KEYER_FRAME_COUNT) {
-      s_keyer_bitmap =
-          gbitmap_create_blank(frame_size, GBitmapFormat8Bit);
-
-      if (s_keyer_bitmap) {
-        s_art_bitmap_layer = bitmap_layer_create(bounds);
-        bitmap_layer_set_background_color(
-            s_art_bitmap_layer, GColorClear);
-        bitmap_layer_set_compositing_mode(
-            s_art_bitmap_layer, GCompOpSet);
-        bitmap_layer_set_alignment(
-            s_art_bitmap_layer, GAlignTopLeft);
-        bitmap_layer_set_bitmap(
-            s_art_bitmap_layer, s_keyer_bitmap);
-
-        layer_add_child(
-            root, bitmap_layer_get_layer(s_art_bitmap_layer));
-        s_keyer_uses_bitmap = true;
-      }
-    }
-
-    if (!s_keyer_uses_bitmap) {
-      APP_LOG(APP_LOG_LEVEL_ERROR,
-              "APNG unusable; falling back to PDC");
-      if (s_keyer_bitmap) {
-        gbitmap_destroy(s_keyer_bitmap);
-        s_keyer_bitmap = NULL;
-      }
-      gbitmap_sequence_destroy(s_keyer_bitmap_sequence);
-      s_keyer_bitmap_sequence = NULL;
-    }
-  }
-
-  if (!s_keyer_uses_bitmap) {
-    s_keyer_sequence =
-        gdraw_command_sequence_create_with_resource(
-            RESOURCE_ID_KEYER_SEQUENCE);
-
-    if (!s_keyer_sequence) {
-      APP_LOG(APP_LOG_LEVEL_ERROR,
-              "Could not load keyer artwork resource");
-    } else {
-      const uint32_t frame_count =
-          gdraw_command_sequence_get_num_frames(s_keyer_sequence);
-      APP_LOG(APP_LOG_LEVEL_INFO,
-              "Keyer PDC fallback: %lu frames",
-              (unsigned long)frame_count);
-
-      s_art_layer = layer_create(bounds);
-      layer_set_update_proc(s_art_layer, art_update_proc);
-      layer_add_child(root, s_art_layer);
-    }
-  }
+  // The 14 animation frames are normal Pebble bitmap resources. Only the
+  // currently displayed frame is kept in memory.
+  s_art_bitmap_layer = bitmap_layer_create(bounds);
+  bitmap_layer_set_background_color(s_art_bitmap_layer, GColorClear);
+  bitmap_layer_set_compositing_mode(s_art_bitmap_layer, GCompOpSet);
+  bitmap_layer_set_alignment(s_art_bitmap_layer, GAlignTopLeft);
+  layer_add_child(root, bitmap_layer_get_layer(s_art_bitmap_layer));
 
   keyer_anim_reset();
 
@@ -795,23 +718,6 @@ static void main_window_unload(Window *window) {
     gbitmap_destroy(s_keyer_bitmap);
     s_keyer_bitmap = NULL;
   }
-
-  if (s_keyer_bitmap_sequence) {
-    gbitmap_sequence_destroy(s_keyer_bitmap_sequence);
-    s_keyer_bitmap_sequence = NULL;
-  }
-
-  if (s_art_layer) {
-    layer_destroy(s_art_layer);
-    s_art_layer = NULL;
-  }
-
-  if (s_keyer_sequence) {
-    gdraw_command_sequence_destroy(s_keyer_sequence);
-    s_keyer_sequence = NULL;
-  }
-
-  s_keyer_uses_bitmap = false;
 
   if (s_rail_layer) {
     layer_destroy(s_rail_layer);
