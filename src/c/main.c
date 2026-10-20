@@ -748,7 +748,7 @@ static void clear_message(void) {
 
 static void select_multi_click(ClickRecognizerRef recognizer, void *context) {
   (void)context;
-  if (click_number_count(recognizer) >= 2) {
+  if (click_number_of_clicks_counted(recognizer) >= 2) {
     clear_message();
   } else {
     settings_menu_push();
