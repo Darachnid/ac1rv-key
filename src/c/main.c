@@ -8,7 +8,10 @@
 #define DEFAULT_WPM 20
 #define MIN_WPM 5
 #define MAX_WPM 35
-#define TONE_HZ 600
+#define DEFAULT_TONE_HZ 600
+#define MIN_TONE_HZ 200
+#define MAX_TONE_HZ 1500
+#define TONE_HZ_STEP 50
 #define TONE_VOLUME 60
 #define TX_TEXT_CAP 96
 #define TX_CODE_CAP 12
@@ -16,6 +19,11 @@
 
 #define PERSIST_WPM_KEY 101
 #define PERSIST_REVERSE_KEY 102
+#define PERSIST_KEYING_MODE_KEY 103
+#define PERSIST_STRAIGHT_BUTTON_KEY 104
+#define PERSIST_TONE_HZ_KEY 105
+#define PERSIST_TONE_ENABLED_KEY 106
+#define PERSIST_VIBRATION_ENABLED_KEY 107
 
 #define SPEED_ANIM_DISTANCE 42
 #define SPEED_ANIM_DURATION 180
@@ -53,6 +61,11 @@ static const CwPair s_alphabet[] = {
 typedef struct {
   uint16_t wpm;
   bool reverse_paddles;
+  bool straight_key_mode;
+  bool straight_key_uses_up;
+  uint16_t tone_hz;
+  bool tone_enabled;
+  bool vibration_enabled;
 } Settings;
 
 static Settings s_settings;
@@ -110,6 +123,15 @@ static char s_speed_text[16];
 static char s_speed_next_text[16];
 static int16_t s_speed_anim_direction;
 
+// Tone-frequency editor
+static Window *s_tone_window;
+static TextLayer *s_tone_text_layer;
+static char s_tone_text[20];
+
+// Vibration battery warning
+static Window *s_vibration_warning_window;
+static TextLayer *s_vibration_warning_text_layer;
+
 // Paddle choice dialog
 static Window *s_paddle_window;
 static TextLayer *s_paddle_prompt_layer;
@@ -129,6 +151,8 @@ static bool s_down_held;
 static bool s_up_pending;
 static bool s_down_pending;
 static bool s_paddle_mark;
+static bool s_straight_held;
+static uint32_t s_straight_press_start;
 static int8_t s_last_paddle;
 static char s_mark_symbol;
 static uint16_t s_unit_ms;
@@ -332,6 +356,11 @@ static void keyer_anim_reset(void) {
 static void settings_load(void) {
   s_settings.wpm = DEFAULT_WPM;
   s_settings.reverse_paddles = false;
+  s_settings.straight_key_mode = false;
+  s_settings.straight_key_uses_up = true;
+  s_settings.tone_hz = DEFAULT_TONE_HZ;
+  s_settings.tone_enabled = true;
+  s_settings.vibration_enabled = true;
 
   if (persist_exists(PERSIST_WPM_KEY)) {
     int value = persist_read_int(PERSIST_WPM_KEY);
@@ -339,9 +368,30 @@ static void settings_load(void) {
       s_settings.wpm = (uint16_t)value;
     }
   }
-
   if (persist_exists(PERSIST_REVERSE_KEY)) {
     s_settings.reverse_paddles = persist_read_bool(PERSIST_REVERSE_KEY);
+  }
+  if (persist_exists(PERSIST_KEYING_MODE_KEY)) {
+    s_settings.straight_key_mode =
+        persist_read_bool(PERSIST_KEYING_MODE_KEY);
+  }
+  if (persist_exists(PERSIST_STRAIGHT_BUTTON_KEY)) {
+    s_settings.straight_key_uses_up =
+        persist_read_bool(PERSIST_STRAIGHT_BUTTON_KEY);
+  }
+  if (persist_exists(PERSIST_TONE_HZ_KEY)) {
+    int value = persist_read_int(PERSIST_TONE_HZ_KEY);
+    if (value >= MIN_TONE_HZ && value <= MAX_TONE_HZ) {
+      s_settings.tone_hz = (uint16_t)value;
+    }
+  }
+  if (persist_exists(PERSIST_TONE_ENABLED_KEY)) {
+    s_settings.tone_enabled =
+        persist_read_bool(PERSIST_TONE_ENABLED_KEY);
+  }
+  if (persist_exists(PERSIST_VIBRATION_ENABLED_KEY)) {
+    s_settings.vibration_enabled =
+        persist_read_bool(PERSIST_VIBRATION_ENABLED_KEY);
   }
 
   s_unit_ms = (uint16_t)(1200u / s_settings.wpm);
@@ -350,6 +400,13 @@ static void settings_load(void) {
 static void settings_save(void) {
   persist_write_int(PERSIST_WPM_KEY, s_settings.wpm);
   persist_write_bool(PERSIST_REVERSE_KEY, s_settings.reverse_paddles);
+  persist_write_bool(PERSIST_KEYING_MODE_KEY, s_settings.straight_key_mode);
+  persist_write_bool(PERSIST_STRAIGHT_BUTTON_KEY,
+                     s_settings.straight_key_uses_up);
+  persist_write_int(PERSIST_TONE_HZ_KEY, s_settings.tone_hz);
+  persist_write_bool(PERSIST_TONE_ENABLED_KEY, s_settings.tone_enabled);
+  persist_write_bool(PERSIST_VIBRATION_ENABLED_KEY,
+                     s_settings.vibration_enabled);
 }
 
 static void refresh_timing(void) {
@@ -497,22 +554,27 @@ static void record_symbol(char symbol) {
 }
 
 static void key_down(uint32_t duration_ms) {
+  // Always clear a previous mark before starting the next one.
   speaker_stop();
 
   const uint32_t tone_ms =
       duration_ms > TX_VIBE_MAX ? TX_VIBE_MAX : duration_ms;
 
-  if (!speaker_play_tone(TONE_HZ, tone_ms, TONE_VOLUME,
+  if (s_settings.tone_enabled &&
+      !speaker_play_tone(s_settings.tone_hz, tone_ms, TONE_VOLUME,
                          SpeakerWaveformSquare)) {
-    APP_LOG(APP_LOG_LEVEL_WARNING, "Tone failed");
+    APP_LOG(APP_LOG_LEVEL_WARNING, "Tone failed at %u Hz",
+            (unsigned)s_settings.tone_hz);
   }
 
-  s_vibration_duration = tone_ms;
-  VibePattern vibe = {
-    .durations = &s_vibration_duration,
-    .num_segments = 1
-  };
-  vibes_enqueue_custom_pattern(vibe);
+  if (s_settings.vibration_enabled) {
+    s_vibration_duration = tone_ms;
+    VibePattern vibe = {
+      .durations = &s_vibration_duration,
+      .num_segments = 1
+    };
+    vibes_enqueue_custom_pattern(vibe);
+  }
 }
 
 static void key_up(void) {
@@ -543,7 +605,8 @@ static void mark_done(void *context) {
 }
 
 static void begin_paddle(void) {
-  if (!s_active || s_paddle_mark || s_gap_timer) return;
+  if (!s_active || s_settings.straight_key_mode ||
+      s_straight_held || s_paddle_mark || s_gap_timer) return;
 
   const bool up = s_up_pending || s_up_held;
   const bool down = s_down_pending || s_down_held;
@@ -580,9 +643,38 @@ static void begin_paddle(void) {
   }
 }
 
+static void straight_key_down(void) {
+  if (!s_active || s_straight_held || s_paddle_mark || s_gap_timer) return;
+
+  prepare_mark();
+  s_straight_held = true;
+  s_straight_press_start = now_ms();
+  keyer_anim_press();
+  // Keep tone/vibration active while held; key_up stops both on release.
+  key_down(TX_VIBE_MAX);
+}
+
+static void straight_key_up(void) {
+  if (!s_straight_held) return;
+
+  const uint32_t held_ms = now_ms() - s_straight_press_start;
+  s_straight_held = false;
+  key_up();
+  keyer_anim_release();
+
+  // At two dit units or longer, decode the straight-key closure as a dah.
+  record_symbol(held_ms >= 2u * s_unit_ms ? '-' : '.');
+}
+
 static void up_down(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
+
+  if (!s_active) return;
+  if (s_settings.straight_key_mode) {
+    if (s_settings.straight_key_uses_up) straight_key_down();
+    return;
+  }
 
   s_up_held = true;
   s_up_pending = true;
@@ -592,12 +684,23 @@ static void up_down(ClickRecognizerRef recognizer, void *context) {
 static void up_up(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
+
+  if (s_settings.straight_key_mode) {
+    if (s_settings.straight_key_uses_up) straight_key_up();
+    return;
+  }
   s_up_held = false;
 }
 
 static void down_down(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
+
+  if (!s_active) return;
+  if (s_settings.straight_key_mode) {
+    if (!s_settings.straight_key_uses_up) straight_key_down();
+    return;
+  }
 
   s_down_held = true;
   s_down_pending = true;
@@ -607,6 +710,11 @@ static void down_down(ClickRecognizerRef recognizer, void *context) {
 static void down_up(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
+
+  if (s_settings.straight_key_mode) {
+    if (!s_settings.straight_key_uses_up) straight_key_up();
+    return;
+  }
   s_down_held = false;
 }
 
@@ -639,6 +747,7 @@ static void stop_keying(void) {
   s_up_pending = false;
   s_down_pending = false;
   s_paddle_mark = false;
+  s_straight_held = false;
 
   key_up();
   keyer_anim_reset();
@@ -890,6 +999,156 @@ static void speed_window_push(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Tone-frequency editor
+// ---------------------------------------------------------------------------
+
+static void tone_refresh_text(void) {
+  snprintf(s_tone_text, sizeof(s_tone_text), "%u Hz",
+           (unsigned)s_settings.tone_hz);
+  if (s_tone_text_layer) text_layer_set_text(s_tone_text_layer, s_tone_text);
+  if (s_menu_layer) menu_layer_reload_data(s_menu_layer);
+}
+
+static void tone_adjust(int direction) {
+  int value = (int)s_settings.tone_hz + direction * TONE_HZ_STEP;
+  if (value < MIN_TONE_HZ) value = MIN_TONE_HZ;
+  if (value > MAX_TONE_HZ) value = MAX_TONE_HZ;
+  if (value == s_settings.tone_hz) return;
+
+  s_settings.tone_hz = (uint16_t)value;
+  settings_save();
+  tone_refresh_text();
+}
+
+static void tone_up_click(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer; (void)context;
+  tone_adjust(1);
+}
+
+static void tone_down_click(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer; (void)context;
+  tone_adjust(-1);
+}
+
+static void tone_back_click(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer; (void)context;
+  window_stack_pop(true);
+}
+
+static void tone_click_config(void *context) {
+  (void)context;
+  window_single_repeating_click_subscribe(BUTTON_ID_UP, 140, tone_up_click);
+  window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 140, tone_down_click);
+  window_single_click_subscribe(BUTTON_ID_BACK, tone_back_click);
+}
+
+static void tone_window_load(Window *window) {
+  Layer *root = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(root);
+  window_set_background_color(window, APP_BLUE);
+
+  s_tone_text_layer = text_layer_create(
+      GRect(0, bounds.size.h / 2 - 28, bounds.size.w, 56));
+  text_layer_set_background_color(s_tone_text_layer, GColorClear);
+  text_layer_set_text_color(s_tone_text_layer, GColorWhite);
+  text_layer_set_font(s_tone_text_layer,
+                      fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
+  text_layer_set_text_alignment(s_tone_text_layer, GTextAlignmentCenter);
+  tone_refresh_text();
+  layer_add_child(root, text_layer_get_layer(s_tone_text_layer));
+}
+
+static void tone_window_unload(Window *window) {
+  (void)window;
+  if (s_tone_text_layer) {
+    text_layer_destroy(s_tone_text_layer);
+    s_tone_text_layer = NULL;
+  }
+  window_destroy(s_tone_window);
+  s_tone_window = NULL;
+  if (s_menu_layer) menu_layer_reload_data(s_menu_layer);
+}
+
+static void tone_window_push(void) {
+  if (s_tone_window) return;
+  s_tone_window = window_create();
+  window_set_click_config_provider(s_tone_window, tone_click_config);
+  window_set_window_handlers(s_tone_window, (WindowHandlers) {
+    .load = tone_window_load,
+    .unload = tone_window_unload
+  });
+  window_stack_push(s_tone_window, true);
+}
+
+// ---------------------------------------------------------------------------
+// Vibration battery warning
+// ---------------------------------------------------------------------------
+
+static void vibration_warning_enable(ClickRecognizerRef recognizer,
+                                     void *context) {
+  (void)recognizer; (void)context;
+  s_settings.vibration_enabled = true;
+  settings_save();
+  window_stack_pop(true);
+}
+
+static void vibration_warning_cancel(ClickRecognizerRef recognizer,
+                                     void *context) {
+  (void)recognizer; (void)context;
+  window_stack_pop(true);
+}
+
+static void vibration_warning_click_config(void *context) {
+  (void)context;
+  window_single_click_subscribe(BUTTON_ID_SELECT, vibration_warning_enable);
+  window_single_click_subscribe(BUTTON_ID_BACK, vibration_warning_cancel);
+}
+
+static void vibration_warning_load(Window *window) {
+  Layer *root = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(root);
+  window_set_background_color(window, GColorWhite);
+
+  s_vibration_warning_text_layer = text_layer_create(
+      GRect(10, 30, bounds.size.w - 20, bounds.size.h - 60));
+  text_layer_set_background_color(s_vibration_warning_text_layer, GColorClear);
+  text_layer_set_text_color(s_vibration_warning_text_layer, GColorBlack);
+  text_layer_set_font(s_vibration_warning_text_layer,
+                      fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_text_alignment(s_vibration_warning_text_layer,
+                                GTextAlignmentCenter);
+  text_layer_set_overflow_mode(s_vibration_warning_text_layer,
+                               GTextOverflowModeWordWrap);
+  text_layer_set_text(s_vibration_warning_text_layer,
+                      "Vibration uses extra battery.\n\nSELECT: Enable\nBACK: Cancel");
+  layer_add_child(root,
+                  text_layer_get_layer(s_vibration_warning_text_layer));
+}
+
+static void vibration_warning_unload(Window *window) {
+  (void)window;
+  if (s_vibration_warning_text_layer) {
+    text_layer_destroy(s_vibration_warning_text_layer);
+    s_vibration_warning_text_layer = NULL;
+  }
+  window_destroy(s_vibration_warning_window);
+  s_vibration_warning_window = NULL;
+  if (s_menu_layer) menu_layer_reload_data(s_menu_layer);
+}
+
+static void vibration_warning_push(void) {
+  if (s_vibration_warning_window) return;
+  s_vibration_warning_window = window_create();
+  window_set_click_config_provider(s_vibration_warning_window,
+                                   vibration_warning_click_config);
+  window_set_window_handlers(s_vibration_warning_window, (WindowHandlers) {
+    .load = vibration_warning_load,
+    .unload = vibration_warning_unload
+  });
+  window_stack_push(s_vibration_warning_window, true);
+}
+
+// ---------------------------------------------------------------------------
 // Paddle choice dialog
 // ---------------------------------------------------------------------------
 
@@ -1022,7 +1281,7 @@ static uint16_t menu_get_num_rows(MenuLayer *menu_layer,
   (void)menu_layer;
   (void)section_index;
   (void)context;
-  return 2;
+  return 7;
 }
 
 static void menu_draw_row(GContext *ctx,
@@ -1032,25 +1291,49 @@ static void menu_draw_row(GContext *ctx,
   (void)context;
 
   char subtitle[32];
+  const char *title = "";
 
-  if (cell_index->row == 0) {
-    snprintf(subtitle,
-             sizeof(subtitle),
-             "%u WPM",
-             (unsigned)s_settings.wpm);
-    menu_cell_basic_draw(
-        ctx, cell_layer, "Speed", subtitle, NULL);
-  } else {
-    snprintf(subtitle,
-             sizeof(subtitle),
-             "%s",
-             s_settings.reverse_paddles
-                 ? "UP dah / DOWN dit"
-                 : "UP dit / DOWN dah");
-
-    menu_cell_basic_draw(
-        ctx, cell_layer, "Paddles", subtitle, NULL);
+  switch (cell_index->row) {
+    case 0:
+      title = "Speed";
+      snprintf(subtitle, sizeof(subtitle), "%u WPM",
+               (unsigned)s_settings.wpm);
+      break;
+    case 1:
+      title = "Keying mode";
+      snprintf(subtitle, sizeof(subtitle), "%s",
+               s_settings.straight_key_mode ? "Straight key" : "Paddle");
+      break;
+    case 2:
+      title = "Straight key";
+      snprintf(subtitle, sizeof(subtitle), "%s button",
+               s_settings.straight_key_uses_up ? "Top" : "Bottom");
+      break;
+    case 3:
+      title = "Tone frequency";
+      snprintf(subtitle, sizeof(subtitle), "%u Hz",
+               (unsigned)s_settings.tone_hz);
+      break;
+    case 4:
+      title = "Tone";
+      snprintf(subtitle, sizeof(subtitle), "%s",
+               s_settings.tone_enabled ? "On" : "Off");
+      break;
+    case 5:
+      title = "Vibration";
+      snprintf(subtitle, sizeof(subtitle), "%s",
+               s_settings.vibration_enabled ? "On" : "Off");
+      break;
+    default:
+      title = "Paddles";
+      snprintf(subtitle, sizeof(subtitle), "%s",
+               s_settings.reverse_paddles
+                   ? "UP dah / DOWN dit"
+                   : "UP dit / DOWN dah");
+      break;
   }
+
+  menu_cell_basic_draw(ctx, cell_layer, title, subtitle, NULL);
 }
 
 static void menu_select(MenuLayer *menu_layer,
@@ -1059,10 +1342,40 @@ static void menu_select(MenuLayer *menu_layer,
   (void)menu_layer;
   (void)context;
 
-  if (cell_index->row == 0) {
-    speed_window_push();
-  } else {
-    paddle_window_push();
+  switch (cell_index->row) {
+    case 0:
+      speed_window_push();
+      break;
+    case 1:
+      s_settings.straight_key_mode = !s_settings.straight_key_mode;
+      settings_save();
+      menu_layer_reload_data(s_menu_layer);
+      break;
+    case 2:
+      s_settings.straight_key_uses_up = !s_settings.straight_key_uses_up;
+      settings_save();
+      menu_layer_reload_data(s_menu_layer);
+      break;
+    case 3:
+      tone_window_push();
+      break;
+    case 4:
+      s_settings.tone_enabled = !s_settings.tone_enabled;
+      settings_save();
+      menu_layer_reload_data(s_menu_layer);
+      break;
+    case 5:
+      if (s_settings.vibration_enabled) {
+        s_settings.vibration_enabled = false;
+        settings_save();
+        menu_layer_reload_data(s_menu_layer);
+      } else {
+        vibration_warning_push();
+      }
+      break;
+    default:
+      paddle_window_push();
+      break;
   }
 }
 
