@@ -599,33 +599,32 @@ static void rail_update_proc(Layer *layer, GContext *ctx) {
   // Draw only the controls: no contrasting rail background.
   graphics_context_set_fill_color(ctx, GColorWhite);
 
-  // UP paddle indicator
+  // Compact UP paddle indicator, kept clear of the character artwork.
   if (!s_settings.reverse_paddles) {
-    graphics_fill_circle(ctx, GPoint(bounds.size.w / 2, 50), 12);
+    graphics_fill_circle(ctx, GPoint(bounds.size.w / 2, 50), 7);
   } else {
     graphics_fill_rect(ctx,
-                       GRect(5, 46, bounds.size.w - 10, 8),
-                       3,
+                       GRect(10, 47, bounds.size.w - 20, 5),
+                       2,
                        GCornersAll);
   }
 
-  // SELECT/menu affordance: a circle whose center is beyond the screen edge,
-  // leaving a clipped semicircle visible.
+  // Small clipped SELECT/menu affordance.
   graphics_fill_circle(ctx,
-                       GPoint(bounds.size.w + 3, bounds.size.h / 2),
-                       13);
+                       GPoint(bounds.size.w + 2, bounds.size.h / 2),
+                       8);
 
-  // DOWN paddle indicator
+  // Compact DOWN paddle indicator.
   if (!s_settings.reverse_paddles) {
     graphics_fill_rect(ctx,
-                       GRect(5, bounds.size.h - 50,
-                             bounds.size.w - 10, 8),
-                       3,
+                       GRect(10, bounds.size.h - 50,
+                             bounds.size.w - 20, 5),
+                       2,
                        GCornersAll);
   } else {
     graphics_fill_circle(ctx,
                          GPoint(bounds.size.w / 2, bounds.size.h - 46),
-                         12);
+                         7);
   }
 }
 
