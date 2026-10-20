@@ -10,7 +10,7 @@ A Pebble Time 2 (Emery) CW keyer with a Pebble-native settings UI and a custom s
 - Squeeze both paddles to alternate
 - SELECT opens the on-watch settings menu
 - Settings menu (opened with SELECT):
-  - Speed: 5–35 WPM
+  - Speed: 5–50 WPM
   - Keying mode: Paddle or Straight Key
   - Straight-key button: choose the top or bottom button; the other button does nothing
   - Tone frequency: 200–1500 Hz in 50 Hz steps (600 Hz default)
