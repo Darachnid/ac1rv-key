@@ -554,17 +554,21 @@ static void record_symbol(char symbol) {
 }
 
 static void key_down(uint32_t duration_ms) {
-  // Always clear a previous mark before starting the next one.
-  speaker_stop();
-
   const uint32_t tone_ms =
       duration_ms > TX_VIBE_MAX ? TX_VIBE_MAX : duration_ms;
 
-  if (s_settings.tone_enabled &&
-      !speaker_play_tone(s_settings.tone_hz, tone_ms, TONE_VOLUME,
-                         SpeakerWaveformSquare)) {
-    APP_LOG(APP_LOG_LEVEL_WARNING, "Tone failed at %u Hz",
-            (unsigned)s_settings.tone_hz);
+  // Timed paddle elements should end naturally. Stopping the speaker just
+  // before every new tone truncates the previous mark and makes short dits
+  // sound clipped. Recover only if the previous tone is still draining.
+  if (s_settings.tone_enabled) {
+    if (speaker_get_status() != SpeakerStatusIdle) {
+      speaker_stop();
+    }
+    if (!speaker_play_tone(s_settings.tone_hz, tone_ms, TONE_VOLUME,
+                           SpeakerWaveformSquare)) {
+      APP_LOG(APP_LOG_LEVEL_WARNING, "Tone failed at %u Hz",
+              (unsigned)s_settings.tone_hz);
+    }
   }
 
   if (s_settings.vibration_enabled) {
@@ -575,6 +579,12 @@ static void key_down(uint32_t duration_ms) {
     };
     vibes_enqueue_custom_pattern(vibe);
   }
+}
+
+// Finish a timed paddle element without cutting off the speaker's own
+// duration envelope. A straight key still uses key_up() for immediate stop.
+static void key_mark_complete(void) {
+  vibes_cancel();
 }
 
 static void key_up(void) {
@@ -597,7 +607,7 @@ static void mark_done(void *context) {
   if (!s_active || !s_paddle_mark) return;
 
   s_paddle_mark = false;
-  key_up();
+  key_mark_complete();
   keyer_anim_release();
   record_symbol(s_mark_symbol);
 
