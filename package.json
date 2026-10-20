@@ -1,5 +1,5 @@
 {
-  "name": "ac1rv-key",
+  "name": "morse-bird",
   "author": "Darachnid",
   "version": "0.1.0",
   "private": true,
@@ -10,7 +10,7 @@
     "keyer"
   ],
   "pebble": {
-    "displayName": "AC1RV Key",
+    "displayName": "Morse Bird",
     "uuid": "c35c36ea-e184-4fb0-9e3f-b5a1c6d2f9a4",
     "sdkVersion": "3",
     "targetPlatforms": [
