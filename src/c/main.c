@@ -13,6 +13,8 @@
 #define MAX_TONE_HZ 1500
 #define TONE_HZ_STEP 50
 #define TONE_VOLUME 60
+#define TONE_PREVIEW_DURATION_MS 10000u
+#define TONE_PREVIEW_REFRESH_MS 9000u
 #define TX_TEXT_CAP 96
 #define TX_CODE_CAP 12
 #define TX_VIBE_MAX 10000u
@@ -127,6 +129,8 @@ static int16_t s_speed_anim_direction;
 static Window *s_tone_window;
 static TextLayer *s_tone_text_layer;
 static char s_tone_text[20];
+static AppTimer *s_tone_preview_timer;
+static bool s_tone_preview_active;
 
 // Vibration battery warning
 static Window *s_vibration_warning_window;
@@ -1012,6 +1016,47 @@ static void speed_window_push(void) {
 // Tone-frequency editor
 // ---------------------------------------------------------------------------
 
+static void tone_preview_refresh(void *context);
+
+static void tone_preview_start(void) {
+  cancel_timer(&s_tone_preview_timer);
+  s_tone_preview_active = true;
+
+  // The frequency picker is also a live audition: play the selected tone
+  // continuously while this window is open, regardless of the send-tone
+  // toggle. The setting itself is not changed by previewing.
+  speaker_stop();
+  if (!speaker_play_tone(s_settings.tone_hz, TONE_PREVIEW_DURATION_MS,
+                         TONE_VOLUME, SpeakerWaveformSquare)) {
+    APP_LOG(APP_LOG_LEVEL_WARNING, "Tone preview failed at %u Hz",
+            (unsigned)s_settings.tone_hz);
+  }
+
+  s_tone_preview_timer =
+      app_timer_register(TONE_PREVIEW_REFRESH_MS, tone_preview_refresh, NULL);
+}
+
+static void tone_preview_refresh(void *context) {
+  (void)context;
+  s_tone_preview_timer = NULL;
+  if (!s_tone_preview_active || !s_tone_window) return;
+
+  // Renew before the 10-second tone expires so the preview feels held.
+  speaker_stop();
+  if (!speaker_play_tone(s_settings.tone_hz, TONE_PREVIEW_DURATION_MS,
+                         TONE_VOLUME, SpeakerWaveformSquare)) {
+    APP_LOG(APP_LOG_LEVEL_WARNING, "Tone preview refresh failed");
+  }
+  s_tone_preview_timer =
+      app_timer_register(TONE_PREVIEW_REFRESH_MS, tone_preview_refresh, NULL);
+}
+
+static void tone_preview_stop(void) {
+  s_tone_preview_active = false;
+  cancel_timer(&s_tone_preview_timer);
+  speaker_stop();
+}
+
 static void tone_refresh_text(void) {
   snprintf(s_tone_text, sizeof(s_tone_text), "%u Hz",
            (unsigned)s_settings.tone_hz);
@@ -1028,6 +1073,7 @@ static void tone_adjust(int direction) {
   s_settings.tone_hz = (uint16_t)value;
   settings_save();
   tone_refresh_text();
+  if (s_tone_preview_active) tone_preview_start();
 }
 
 static void tone_up_click(ClickRecognizerRef recognizer, void *context) {
@@ -1066,10 +1112,12 @@ static void tone_window_load(Window *window) {
   text_layer_set_text_alignment(s_tone_text_layer, GTextAlignmentCenter);
   tone_refresh_text();
   layer_add_child(root, text_layer_get_layer(s_tone_text_layer));
+  tone_preview_start();
 }
 
 static void tone_window_unload(Window *window) {
   (void)window;
+  tone_preview_stop();
   if (s_tone_text_layer) {
     text_layer_destroy(s_tone_text_layer);
     s_tone_text_layer = NULL;
