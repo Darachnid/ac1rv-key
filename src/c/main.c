@@ -746,12 +746,6 @@ static void clear_message(void) {
   draw_message();
 }
 
-static void select_click(ClickRecognizerRef recognizer, void *context) {
-  (void)recognizer;
-  (void)context;
-  settings_menu_push();
-}
-
 static void select_multi_click(ClickRecognizerRef recognizer, void *context) {
   (void)context;
   if (click_number_count(recognizer) >= 2) {
