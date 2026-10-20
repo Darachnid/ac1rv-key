@@ -28,7 +28,6 @@
 #define KEYER_STEP_APPROACH_MS 33
 #define KEYER_STEP_RETURN_MS 45
 #define KEYER_IDLE_RETURN_MS 1200
-#define KEYER_APNG_FRAME_MS 100
 
 typedef struct {
   char letter;
@@ -159,19 +158,20 @@ static bool keyer_bitmap_show_frame(uint8_t frame_index) {
     return false;
   }
 
-  // We use APNG as a compact frame store, not as the animation clock.
-  // Restart then seek to the requested frame; our AppTimers still control
-  // the 33/8/45 ms motion exactly like the browser preview.
+  // GBitmapSequence is sequential. For deterministic random access, restart
+  // the APNG and decode forward to the requested frame. This also correctly
+  // initializes frame 0; update_bitmap_by_elapsed() is not a substitute for
+  // decoding the first frame.
   if (!gbitmap_sequence_restart(s_keyer_bitmap_sequence)) {
     return false;
   }
 
-  const uint32_t elapsed_ms =
-      (uint32_t)frame_index * KEYER_APNG_FRAME_MS;
-
-  if (!gbitmap_sequence_update_bitmap_by_elapsed(
-          s_keyer_bitmap_sequence, s_keyer_bitmap, elapsed_ms)) {
-    return false;
+  uint32_t ignored_delay = 0;
+  for (uint8_t i = 0; i <= frame_index; ++i) {
+    if (!gbitmap_sequence_update_bitmap_next_frame(
+            s_keyer_bitmap_sequence, s_keyer_bitmap, &ignored_delay)) {
+      return false;
+    }
   }
 
   if (s_art_bitmap_layer) {
