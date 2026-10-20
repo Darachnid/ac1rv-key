@@ -646,37 +646,11 @@ static void stop_keying(void) {
 
 static void rail_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
-
-  // Draw only the controls: no contrasting rail background.
+  // The sole remaining control is the clipped SELECT/menu semicircle.
   graphics_context_set_fill_color(ctx, GColorWhite);
-
-  // Compact UP paddle indicator, kept clear of the character artwork.
-  if (!s_settings.reverse_paddles) {
-    graphics_fill_circle(ctx, GPoint(bounds.size.w / 2, 50), 7);
-  } else {
-    graphics_fill_rect(ctx,
-                       GRect(10, 47, bounds.size.w - 20, 5),
-                       2,
-                       GCornersAll);
-  }
-
-  // Small clipped SELECT/menu affordance.
   graphics_fill_circle(ctx,
                        GPoint(bounds.size.w + 2, bounds.size.h / 2),
                        8);
-
-  // Compact DOWN paddle indicator.
-  if (!s_settings.reverse_paddles) {
-    graphics_fill_rect(ctx,
-                       GRect(10, bounds.size.h - 50,
-                             bounds.size.w - 20, 5),
-                       2,
-                       GCornersAll);
-  } else {
-    graphics_fill_circle(ctx,
-                         GPoint(bounds.size.w / 2, bounds.size.h - 46),
-                         7);
-  }
 }
 
 static void main_window_load(Window *window) {
