@@ -734,10 +734,31 @@ static void down_up(ClickRecognizerRef recognizer, void *context) {
 
 static void settings_menu_push(void);
 
+static void clear_message(void) {
+  // Clear visible text and any undecoded Morse buffered for the next letter.
+  memset(s_lines, 0, sizeof(s_lines));
+  memset(s_line_lengths, 0, sizeof(s_line_lengths));
+  s_display_text[0] = '\0';
+  s_code[0] = '\0';
+  s_code_length = 0;
+  cancel_timer(&s_letter_timer);
+  cancel_timer(&s_word_timer);
+  draw_message();
+}
+
 static void select_click(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
   settings_menu_push();
+}
+
+static void select_multi_click(ClickRecognizerRef recognizer, void *context) {
+  (void)context;
+  if (click_number_count(recognizer) >= 2) {
+    clear_message();
+  } else {
+    settings_menu_push();
+  }
 }
 
 static void main_click_config(void *context) {
@@ -745,7 +766,9 @@ static void main_click_config(void *context) {
 
   window_raw_click_subscribe(BUTTON_ID_UP, up_down, up_up, NULL);
   window_raw_click_subscribe(BUTTON_ID_DOWN, down_down, down_up, NULL);
-  window_single_click_subscribe(BUTTON_ID_SELECT, select_click);
+  // Delay the single-click action briefly so a second SELECT press can clear.
+  window_multi_click_subscribe(BUTTON_ID_SELECT, 1, 2, 300, true,
+                               select_multi_click);
 }
 
 static void stop_keying(void) {
