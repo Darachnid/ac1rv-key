@@ -24,8 +24,9 @@
 #define KEYER_FRAME_READY 8
 #define KEYER_FRAME_DOWN 13
 #define KEYER_FRAME_COUNT 14
-#define KEYER_STEP_ACTIVE_MS 12
-#define KEYER_STEP_HOME_MS 28
+#define KEYER_STEP_PRESS_MS 8
+#define KEYER_STEP_APPROACH_MS 33
+#define KEYER_STEP_RETURN_MS 45
 #define KEYER_IDLE_RETURN_MS 1200
 
 typedef struct {
@@ -64,9 +65,20 @@ static TextLayer *s_message_layer;
 static Layer *s_art_layer;
 static Layer *s_rail_layer;
 
+typedef enum {
+  KEYER_ANIM_IDLE = 0,
+  KEYER_ANIM_APPROACH,
+  KEYER_ANIM_PRESS,
+  KEYER_ANIM_HOLD,
+  KEYER_ANIM_RELEASE,
+  KEYER_ANIM_RETURN
+} KeyerAnimPhase;
+
 static GDrawCommandSequence *s_keyer_sequence;
 static uint8_t s_keyer_frame = KEYER_FRAME_HOME;
 static uint8_t s_keyer_target = KEYER_FRAME_HOME;
+static KeyerAnimPhase s_keyer_phase = KEYER_ANIM_IDLE;
+static bool s_keyer_release_requested;
 static AppTimer *s_keyer_anim_timer;
 static AppTimer *s_keyer_idle_timer;
 
@@ -133,6 +145,9 @@ static void keyer_anim_cancel(AppTimer **timer) {
   }
 }
 
+static void keyer_anim_step(void *context);
+static void keyer_idle_return(void *context);
+
 static void keyer_anim_draw_frame(uint8_t frame_index) {
   if (frame_index >= KEYER_FRAME_COUNT) return;
   s_keyer_frame = frame_index;
@@ -140,9 +155,36 @@ static void keyer_anim_draw_frame(uint8_t frame_index) {
 }
 
 static uint32_t keyer_anim_interval(void) {
-  return s_keyer_target == KEYER_FRAME_HOME
-      ? KEYER_STEP_HOME_MS
-      : KEYER_STEP_ACTIVE_MS;
+  switch (s_keyer_phase) {
+    case KEYER_ANIM_APPROACH:
+      return KEYER_STEP_APPROACH_MS;
+    case KEYER_ANIM_RETURN:
+      return KEYER_STEP_RETURN_MS;
+    case KEYER_ANIM_PRESS:
+    case KEYER_ANIM_RELEASE:
+      return KEYER_STEP_PRESS_MS;
+    default:
+      return KEYER_STEP_PRESS_MS;
+  }
+}
+
+static void keyer_anim_start(KeyerAnimPhase phase, uint8_t target) {
+  if (target >= KEYER_FRAME_COUNT) return;
+
+  s_keyer_phase = phase;
+  s_keyer_target = target;
+
+  keyer_anim_cancel(&s_keyer_anim_timer);
+  if (s_keyer_frame != s_keyer_target) {
+    s_keyer_anim_timer =
+        app_timer_register(keyer_anim_interval(), keyer_anim_step, NULL);
+  }
+}
+
+static void keyer_anim_schedule_home(void) {
+  keyer_anim_cancel(&s_keyer_idle_timer);
+  s_keyer_idle_timer =
+      app_timer_register(KEYER_IDLE_RETURN_MS, keyer_idle_return, NULL);
 }
 
 static void keyer_anim_step(void *context) {
@@ -158,40 +200,79 @@ static void keyer_anim_step(void *context) {
   if (s_keyer_frame != s_keyer_target) {
     s_keyer_anim_timer =
         app_timer_register(keyer_anim_interval(), keyer_anim_step, NULL);
+    return;
   }
-}
 
-static void keyer_anim_target(uint8_t target) {
-  if (target >= KEYER_FRAME_COUNT) return;
+  switch (s_keyer_phase) {
+    case KEYER_ANIM_APPROACH:
+      // HTML preview: 1 -> 9, then immediately 10 -> 14.
+      keyer_anim_start(KEYER_ANIM_PRESS, KEYER_FRAME_DOWN);
+      break;
 
-  s_keyer_target = target;
-  if (!s_keyer_anim_timer && s_keyer_frame != s_keyer_target) {
-    s_keyer_anim_timer =
-        app_timer_register(keyer_anim_interval(), keyer_anim_step, NULL);
+    case KEYER_ANIM_PRESS:
+      if (s_keyer_release_requested) {
+        keyer_anim_start(KEYER_ANIM_RELEASE, KEYER_FRAME_READY);
+      } else {
+        s_keyer_phase = KEYER_ANIM_HOLD;
+      }
+      break;
+
+    case KEYER_ANIM_RELEASE:
+      s_keyer_phase = KEYER_ANIM_HOLD;
+      keyer_anim_schedule_home();
+      break;
+
+    case KEYER_ANIM_RETURN:
+      s_keyer_phase = KEYER_ANIM_IDLE;
+      break;
+
+    default:
+      break;
   }
 }
 
 static void keyer_idle_return(void *context) {
   (void)context;
   s_keyer_idle_timer = NULL;
-  keyer_anim_target(KEYER_FRAME_HOME);
+
+  // HTML preview: poised frame 9 returns through 8..1.
+  if (s_keyer_frame != KEYER_FRAME_HOME) {
+    keyer_anim_start(KEYER_ANIM_RETURN, KEYER_FRAME_HOME);
+  } else {
+    s_keyer_phase = KEYER_ANIM_IDLE;
+  }
 }
 
 static void keyer_anim_press(void) {
   keyer_anim_cancel(&s_keyer_idle_timer);
-  keyer_anim_target(KEYER_FRAME_DOWN);
+  s_keyer_release_requested = false;
+
+  if (s_keyer_frame == KEYER_FRAME_HOME) {
+    // First activity: preserve the complete bird approach before the key press.
+    keyer_anim_start(KEYER_ANIM_APPROACH, KEYER_FRAME_READY);
+  } else {
+    // Already at/near the sounder: drive toward the fully pressed frame.
+    keyer_anim_start(KEYER_ANIM_PRESS, KEYER_FRAME_DOWN);
+  }
 }
 
 static void keyer_anim_release(void) {
-  keyer_anim_target(KEYER_FRAME_READY);
-  keyer_anim_cancel(&s_keyer_idle_timer);
-  s_keyer_idle_timer =
-      app_timer_register(KEYER_IDLE_RETURN_MS, keyer_idle_return, NULL);
+  s_keyer_release_requested = true;
+
+  // Never truncate the approach/press sequence. A short dit may finish before
+  // frame 14; in that case the animation completes 9 -> 14, then 13 -> 9.
+  if (s_keyer_phase == KEYER_ANIM_HOLD ||
+      (s_keyer_phase == KEYER_ANIM_PRESS &&
+       s_keyer_frame == KEYER_FRAME_DOWN)) {
+    keyer_anim_start(KEYER_ANIM_RELEASE, KEYER_FRAME_READY);
+  }
 }
 
 static void keyer_anim_reset(void) {
   keyer_anim_cancel(&s_keyer_anim_timer);
   keyer_anim_cancel(&s_keyer_idle_timer);
+  s_keyer_phase = KEYER_ANIM_IDLE;
+  s_keyer_release_requested = false;
   s_keyer_target = KEYER_FRAME_HOME;
   keyer_anim_draw_frame(KEYER_FRAME_HOME);
 }
