@@ -13,7 +13,7 @@ A Pebble Time 2 (Emery) CW keyer with a Pebble-native settings UI and a custom s
   - Speed: 5–50 WPM
   - Keying mode: Paddle or Straight Key
   - Straight-key button: choose the top or bottom button; the other button does nothing
-  - Tone frequency: 200–1500 Hz in 50 Hz steps (600 Hz default)
+  - Tone frequency: 200–1500 Hz in 50 Hz steps (600 Hz default); the selector continuously previews the chosen tone and stops when you leave
   - Tone on/off
   - Vibration on/off; enabling vibration shows a battery-use warning
   - Paddle order: choose whether UP sends dit or dah
