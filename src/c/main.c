@@ -59,8 +59,6 @@ static Settings s_settings;
 
 // Main keyer window
 static Window *s_main_window;
-static StatusBarLayer *s_status_bar;
-static TextLayer *s_title_layer;
 static TextLayer *s_message_layer;
 static BitmapLayer *s_art_bitmap_layer;
 static Layer *s_rail_layer;
@@ -598,10 +596,8 @@ static void stop_keying(void) {
 static void rail_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
 
+  // Draw only the controls: no contrasting rail background.
   graphics_context_set_fill_color(ctx, GColorWhite);
-  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
-
-  graphics_context_set_fill_color(ctx, APP_BLUE);
 
   // UP paddle indicator
   if (!s_settings.reverse_paddles) {
@@ -640,26 +636,6 @@ static void main_window_load(Window *window) {
 
   window_set_background_color(window, APP_BLUE);
 
-  s_status_bar = status_bar_layer_create();
-  status_bar_layer_set_colors(s_status_bar, APP_BLUE, GColorWhite);
-  status_bar_layer_set_separator_mode(
-      s_status_bar, StatusBarLayerSeparatorModeNone);
-
-  Layer *status_layer = status_bar_layer_get_layer(s_status_bar);
-  layer_set_frame(status_layer,
-                  GRect(0, 0, content_width, STATUS_BAR_LAYER_HEIGHT));
-  layer_add_child(root, status_layer);
-
-  s_title_layer = text_layer_create(
-      GRect(55, -2, content_width - 60, STATUS_BAR_LAYER_HEIGHT + 4));
-  text_layer_set_background_color(s_title_layer, GColorClear);
-  text_layer_set_text_color(s_title_layer, GColorWhite);
-  text_layer_set_font(
-      s_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
-  text_layer_set_text_alignment(s_title_layer, GTextAlignmentCenter);
-  text_layer_set_text(s_title_layer, "AC1RV Key");
-  layer_add_child(root, text_layer_get_layer(s_title_layer));
-
   // The 14 animation frames are normal Pebble bitmap resources. Only the
   // currently displayed frame is kept in memory.
   s_art_bitmap_layer = bitmap_layer_create(bounds);
@@ -671,9 +647,9 @@ static void main_window_load(Window *window) {
   keyer_anim_reset();
 
   s_message_layer = text_layer_create(
-      GRect(3, STATUS_BAR_LAYER_HEIGHT + 100,
+      GRect(3, 100,
             content_width - 6,
-            bounds.size.h - STATUS_BAR_LAYER_HEIGHT - 102));
+            bounds.size.h - 102));
   text_layer_set_background_color(s_message_layer, GColorClear);
   text_layer_set_text_color(s_message_layer, GColorWhite);
   text_layer_set_font(
@@ -693,16 +669,6 @@ static void main_window_load(Window *window) {
 static void main_window_unload(Window *window) {
   (void)window;
   stop_keying();
-
-  if (s_status_bar) {
-    status_bar_layer_destroy(s_status_bar);
-    s_status_bar = NULL;
-  }
-
-  if (s_title_layer) {
-    text_layer_destroy(s_title_layer);
-    s_title_layer = NULL;
-  }
 
   if (s_message_layer) {
     text_layer_destroy(s_message_layer);
