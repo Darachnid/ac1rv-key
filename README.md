@@ -9,11 +9,16 @@ A Pebble Time 2 (Emery) CW keyer with a Pebble-native settings UI and a custom s
 - Hold paddles for repeated elements
 - Squeeze both paddles to alternate
 - SELECT opens the on-watch settings menu
-- Settings:
-  - Speed (5–35 WPM), with animated value changes
-  - Paddle order (choose whether UP sends dit or dah)
-- 600 Hz square-wave sidetone
-- Haptic keying feedback
+- Settings menu (opened with SELECT):
+  - Speed: 5–35 WPM
+  - Keying mode: Paddle or Straight Key
+  - Straight-key button: choose the top or bottom button; the other button does nothing
+  - Tone frequency: 200–1500 Hz in 50 Hz steps (600 Hz default)
+  - Tone on/off
+  - Vibration on/off; enabling vibration shows a battery-use warning
+  - Paddle order: choose whether UP sends dit or dah
+- Tone and vibration can be enabled together or independently
+- Square-wave sidetone and haptic keying feedback
 - Live Morse decoding on the sending screen
 - Settings persist on-watch
 
@@ -26,10 +31,7 @@ The main screen follows the AC1RV Key mockup:
 
 - Vivid Cerulean main field
 - No status bar or title/header on the sending screen
-- Transparent right-side controls with white icons on the blue background:
-  - top: dit/dah symbol for UP
-  - middle: clipped semicircle indicating SELECT opens the menu
-  - bottom: dit/dah symbol for DOWN
+- Small white clipped semicircle at the right edge indicating SELECT opens the menu; no sidebar bar or dit/dah icons
 - large decoded CW text, displayed in three rows with newest text on top; when the current row fills, rows shift downward and the next character starts at column 1
 - unknown/undecodable Morse sequences display as `*`
 - only the white SELECT semicircle remains at the right edge; dit/dah rail icons are omitted and text uses the full screen width
