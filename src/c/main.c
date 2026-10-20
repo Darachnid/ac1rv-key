@@ -21,6 +21,8 @@
 #define TX_TEXT_CAP 96
 #define TX_CODE_CAP 12
 #define TX_VIBE_MAX 10000u
+#define SK_IDLE_MS 750u
+#define SK_REFRESH_MS 9000u
 
 #define PERSIST_WPM_KEY 101
 #define PERSIST_REVERSE_KEY 102
@@ -177,6 +179,9 @@ static char s_code[TX_CODE_CAP + 1];
 static uint8_t s_code_length;
 static uint32_t s_last_mark_end;
 static uint32_t s_vibration_duration;
+static bool s_sk_audio_on;
+static AppTimer *s_sk_audio_idle;
+static AppTimer *s_sk_audio_refresh;
 
 static uint32_t now_ms(void) {
   time_t seconds = 0;
@@ -675,6 +680,58 @@ static void begin_paddle(void) {
   }
 }
 
+static void sk_audio_stop(void) {
+  cancel_timer(&s_sk_audio_idle);
+  cancel_timer(&s_sk_audio_refresh);
+  if (s_sk_audio_on) speaker_stop();
+  s_sk_audio_on = false;
+}
+
+static void sk_audio_refresh(void *context) {
+  (void)context;
+  s_sk_audio_refresh = NULL;
+  if (!s_sk_audio_on || !s_straight_held) return;
+  speaker_stop();
+  s_sk_audio_on = speaker_play_tone(s_settings.tone_hz, TX_VIBE_MAX,
+                                   TONE_VOLUME, SpeakerWaveformSquare);
+  if (s_sk_audio_on)
+    s_sk_audio_refresh = app_timer_register(SK_REFRESH_MS, sk_audio_refresh, NULL);
+}
+
+static void sk_audio_idle(void *context) {
+  (void)context;
+  s_sk_audio_idle = NULL;
+  if (!s_straight_held) sk_audio_stop();
+}
+
+static void sk_audio_down(void) {
+  cancel_timer(&s_sk_audio_idle);
+  if (!s_settings.tone_enabled) return;
+  if (s_sk_audio_on && speaker_get_status() != SpeakerStatusIdle) {
+    speaker_set_volume(TONE_VOLUME);
+    return;
+  }
+  s_sk_audio_on = false;
+  speaker_set_volume(TONE_VOLUME);
+  s_sk_audio_on = speaker_play_tone(s_settings.tone_hz, TX_VIBE_MAX,
+                                     TONE_VOLUME, SpeakerWaveformSquare);
+  if (!s_sk_audio_on) {
+    APP_LOG(APP_LOG_LEVEL_WARNING, "Straight-key sidetone start failed");
+    return;
+  }
+  cancel_timer(&s_sk_audio_refresh);
+  s_sk_audio_refresh = app_timer_register(SK_REFRESH_MS, sk_audio_refresh, NULL);
+}
+
+static void sk_audio_up(void) {
+  if (!s_sk_audio_on) return;
+  // Hold the generator open but silence it; no stop/restart between taps.
+  speaker_set_volume(0);
+  cancel_timer(&s_sk_audio_refresh);
+  cancel_timer(&s_sk_audio_idle);
+  s_sk_audio_idle = app_timer_register(SK_IDLE_MS, sk_audio_idle, NULL);
+}
+
 static void straight_key_down(void) {
   if (!s_active || s_straight_held || s_paddle_mark || s_gap_timer) return;
 
@@ -682,8 +739,12 @@ static void straight_key_down(void) {
   s_straight_held = true;
   s_straight_press_start = now_ms();
   keyer_anim_press();
-  // Keep tone/vibration active while held; key_up stops both on release.
-  key_down(TX_VIBE_MAX);
+  sk_audio_down();
+  if (s_settings.vibration_enabled) {
+    s_vibration_duration = TX_VIBE_MAX;
+    VibePattern vibe = { .durations = &s_vibration_duration, .num_segments = 1 };
+    vibes_enqueue_custom_pattern(vibe);
+  }
 }
 
 static void straight_key_up(void) {
@@ -691,7 +752,8 @@ static void straight_key_up(void) {
 
   const uint32_t held_ms = now_ms() - s_straight_press_start;
   s_straight_held = false;
-  key_up();
+  sk_audio_up();
+  vibes_cancel();
   keyer_anim_release();
 
   // Derive straight-key element length from recent physical presses rather
@@ -788,6 +850,7 @@ static void main_click_config(void *context) {
 
 static void stop_keying(void) {
   s_active = false;
+  sk_audio_stop();
 
   cancel_timer(&s_mark_timer);
   cancel_timer(&s_gap_timer);
