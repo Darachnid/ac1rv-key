@@ -6,6 +6,9 @@
 
 #define APP_BLUE GColorVividCerulean
 #define DEFAULT_WPM 20
+#define STRAIGHT_UNIT_MIN_MS 60u  // 20 WPM
+#define STRAIGHT_UNIT_MAX_MS 120u // 10 WPM
+#define STRAIGHT_UNIT_INITIAL_MS 80u // 15 WPM
 #define MIN_WPM 5
 #define MAX_WPM 50
 #define DEFAULT_TONE_HZ 600
@@ -160,6 +163,7 @@ static uint32_t s_straight_press_start;
 static int8_t s_last_paddle;
 static char s_mark_symbol;
 static uint16_t s_unit_ms;
+static uint16_t s_straight_unit_ms;
 
 #define DISPLAY_LINE_COUNT 3
 #define DISPLAY_TEXT_CAP (DISPLAY_LINE_COUNT * (TX_TEXT_CAP + 1))
@@ -517,15 +521,29 @@ static void word_timeout(void *context) {
   }
 }
 
+// Paddle timing stays fixed at the menu WPM; straight-key decoding tracks
+// observed manual element lengths independently (10–20 WPM).
+static uint16_t decode_unit_ms(void) {
+  return s_settings.straight_key_mode ? s_straight_unit_ms : s_unit_ms;
+}
+
+static void straight_learn_duration(uint32_t held_ms, bool dah) {
+  uint32_t estimate = dah ? (held_ms / 3u) : held_ms;
+  if (estimate < STRAIGHT_UNIT_MIN_MS) estimate = STRAIGHT_UNIT_MIN_MS;
+  if (estimate > STRAIGHT_UNIT_MAX_MS) estimate = STRAIGHT_UNIT_MAX_MS;
+  // Smooth individual presses to resist jitter without lagging excessively.
+  s_straight_unit_ms = (uint16_t)((3u * s_straight_unit_ms + estimate + 2u) / 4u);
+}
+
 static void prepare_mark(void) {
   if (s_last_mark_end && s_code_length) {
     const uint32_t gap = now_ms() - s_last_mark_end;
 
-    if (gap >= 3u * s_unit_ms) {
+    if (gap >= 3u * decode_unit_ms()) {
       finish_letter();
     }
 
-    if (gap >= 7u * s_unit_ms &&
+    if (gap >= 7u * decode_unit_ms() &&
         s_line_lengths[0] &&
         s_lines[0][s_line_lengths[0] - 1] != ' ') {
       append_text(' ');
@@ -542,8 +560,8 @@ static void schedule_decode(void) {
   cancel_timer(&s_letter_timer);
   cancel_timer(&s_word_timer);
 
-  s_letter_timer = app_timer_register(3u * s_unit_ms, letter_timeout, NULL);
-  s_word_timer = app_timer_register(7u * s_unit_ms, word_timeout, NULL);
+  s_letter_timer = app_timer_register(3u * decode_unit_ms(), letter_timeout, NULL);
+  s_word_timer = app_timer_register(7u * decode_unit_ms(), word_timeout, NULL);
 }
 
 static void record_symbol(char symbol) {
@@ -676,8 +694,11 @@ static void straight_key_up(void) {
   key_up();
   keyer_anim_release();
 
-  // At two dit units or longer, decode the straight-key closure as a dah.
-  record_symbol(held_ms >= 2u * s_unit_ms ? '-' : '.');
+  // Derive straight-key element length from recent physical presses rather
+  // than the paddle speed setting. Decode before learning the current mark.
+  const bool dah = held_ms >= 2u * s_straight_unit_ms;
+  straight_learn_duration(held_ms, dah);
+  record_symbol(dah ? '-' : '.');
 }
 
 static void up_down(ClickRecognizerRef recognizer, void *context) {
@@ -1507,6 +1528,7 @@ static void settings_menu_push(void) {
 
 static void init(void) {
   settings_load();
+  s_straight_unit_ms = STRAIGHT_UNIT_INITIAL_MS;
 
   memset(s_lines, 0, sizeof(s_lines));
   memset(s_line_lengths, 0, sizeof(s_line_lengths));
