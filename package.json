@@ -23,6 +23,11 @@
           "type": "bitmap",
           "name": "ICON_DAH",
           "file": "images/dah.png"
+        },
+        {
+          "type": "raw",
+          "name": "KEYER_SEQUENCE",
+          "file": "animations/frames.pdc"
         }
       ]
     }

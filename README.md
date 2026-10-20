@@ -32,8 +32,20 @@ The main screen follows the AC1RV Key mockup:
   - bottom: dit/dah symbol for DOWN
 - large decoded CW text
 
-The bird/sounder art area is intentionally kept separate from the keyer and UI
-logic so the final PDC sequence can be dropped in without changing Morse timing.
+The bird and sounder are baked as a single 14-frame PDC vector sequence
+(`resources/animations/frames.pdc`) at the Emery 200x228 coordinate system.
+The animation is driven independently from Morse timing:
+
+- 001 is the home pose
+- 009 is the poised pose
+- 014 is the pressed pose
+- a key press targets 014
+- key release targets 009
+- after 1.2 seconds of inactivity, the bird returns to 001
+- if keying resumes during the return, the animation immediately reverses toward
+  the pressed pose
+
+The Morse timers remain authoritative; the animation never delays a dit or dah.
 
 ## Build
 

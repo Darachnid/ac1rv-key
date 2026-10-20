@@ -20,6 +20,14 @@
 #define SPEED_ANIM_DISTANCE 42
 #define SPEED_ANIM_DURATION 180
 
+#define KEYER_FRAME_HOME 0
+#define KEYER_FRAME_READY 8
+#define KEYER_FRAME_DOWN 13
+#define KEYER_FRAME_COUNT 14
+#define KEYER_STEP_ACTIVE_MS 12
+#define KEYER_STEP_HOME_MS 28
+#define KEYER_IDLE_RETURN_MS 1200
+
 typedef struct {
   char letter;
   const char *code;
@@ -55,6 +63,12 @@ static TextLayer *s_title_layer;
 static TextLayer *s_message_layer;
 static Layer *s_art_layer;
 static Layer *s_rail_layer;
+
+static GDrawCommandSequence *s_keyer_sequence;
+static uint8_t s_keyer_frame = KEYER_FRAME_HOME;
+static uint8_t s_keyer_target = KEYER_FRAME_HOME;
+static AppTimer *s_keyer_anim_timer;
+static AppTimer *s_keyer_idle_timer;
 
 // Settings menu
 static Window *s_menu_window;
@@ -110,6 +124,76 @@ static void cancel_timer(AppTimer **timer) {
     app_timer_cancel(*timer);
     *timer = NULL;
   }
+}
+
+static void keyer_anim_cancel(AppTimer **timer) {
+  if (*timer) {
+    app_timer_cancel(*timer);
+    *timer = NULL;
+  }
+}
+
+static void keyer_anim_draw_frame(uint8_t frame_index) {
+  if (frame_index >= KEYER_FRAME_COUNT) return;
+  s_keyer_frame = frame_index;
+  if (s_art_layer) layer_mark_dirty(s_art_layer);
+}
+
+static uint32_t keyer_anim_interval(void) {
+  return s_keyer_target == KEYER_FRAME_HOME
+      ? KEYER_STEP_HOME_MS
+      : KEYER_STEP_ACTIVE_MS;
+}
+
+static void keyer_anim_step(void *context) {
+  (void)context;
+  s_keyer_anim_timer = NULL;
+
+  if (s_keyer_frame < s_keyer_target) {
+    keyer_anim_draw_frame(s_keyer_frame + 1);
+  } else if (s_keyer_frame > s_keyer_target) {
+    keyer_anim_draw_frame(s_keyer_frame - 1);
+  }
+
+  if (s_keyer_frame != s_keyer_target) {
+    s_keyer_anim_timer =
+        app_timer_register(keyer_anim_interval(), keyer_anim_step, NULL);
+  }
+}
+
+static void keyer_anim_target(uint8_t target) {
+  if (target >= KEYER_FRAME_COUNT) return;
+
+  s_keyer_target = target;
+  if (!s_keyer_anim_timer && s_keyer_frame != s_keyer_target) {
+    s_keyer_anim_timer =
+        app_timer_register(keyer_anim_interval(), keyer_anim_step, NULL);
+  }
+}
+
+static void keyer_idle_return(void *context) {
+  (void)context;
+  s_keyer_idle_timer = NULL;
+  keyer_anim_target(KEYER_FRAME_HOME);
+}
+
+static void keyer_anim_press(void) {
+  keyer_anim_cancel(&s_keyer_idle_timer);
+  keyer_anim_target(KEYER_FRAME_DOWN);
+}
+
+static void keyer_anim_release(void) {
+  keyer_anim_target(KEYER_FRAME_READY);
+  keyer_anim_cancel(&s_keyer_idle_timer);
+  s_keyer_idle_timer =
+      app_timer_register(KEYER_IDLE_RETURN_MS, keyer_idle_return, NULL);
+}
+
+static void keyer_anim_reset(void) {
+  keyer_anim_cancel(&s_keyer_anim_timer);
+  keyer_anim_cancel(&s_keyer_idle_timer);
+  s_keyer_target = KEYER_FRAME_HOME;
+  keyer_anim_draw_frame(KEYER_FRAME_HOME);
 }
 
 static void settings_load(void) {
@@ -274,6 +358,7 @@ static void mark_done(void *context) {
 
   s_paddle_mark = false;
   key_up();
+  keyer_anim_release();
   record_symbol(s_mark_symbol);
 
   s_gap_timer = app_timer_register(s_unit_ms, gap_done, NULL);
@@ -306,12 +391,14 @@ static void begin_paddle(void) {
   s_paddle_mark = true;
 
   prepare_mark();
+  keyer_anim_press();
   key_down(duration);
 
   s_mark_timer = app_timer_register(duration, mark_done, NULL);
   if (!s_mark_timer) {
     s_paddle_mark = false;
     key_up();
+    keyer_anim_release();
   }
 }
 
@@ -376,6 +463,7 @@ static void stop_keying(void) {
   s_paddle_mark = false;
 
   key_up();
+  keyer_anim_reset();
 }
 
 static void rail_update_proc(Layer *layer, GContext *ctx) {
@@ -418,11 +506,16 @@ static void rail_update_proc(Layer *layer, GContext *ctx) {
 
 static void art_update_proc(Layer *layer, GContext *ctx) {
   (void)layer;
-  (void)ctx;
 
-  // Deliberately empty until the final bird/sounder PDC sequence is added.
-  // Keeping the art in its own Layer means animation invalidates only this
-  // region and can never delay Morse key timing.
+  if (!s_keyer_sequence) return;
+
+  GDrawCommandFrame *frame =
+      gdraw_command_sequence_get_frame_by_index(
+          s_keyer_sequence, s_keyer_frame);
+  if (!frame) return;
+
+  gdraw_command_frame_draw(
+      ctx, s_keyer_sequence, frame, GPointZero);
 }
 
 static void main_window_load(Window *window) {
@@ -452,10 +545,27 @@ static void main_window_load(Window *window) {
   text_layer_set_text(s_title_layer, "AC1RV Key");
   layer_add_child(root, text_layer_get_layer(s_title_layer));
 
-  s_art_layer = layer_create(
-      GRect(0, STATUS_BAR_LAYER_HEIGHT + 4, content_width, 96));
+  s_keyer_sequence =
+      gdraw_command_sequence_create_with_resource(
+          RESOURCE_ID_KEYER_SEQUENCE);
+
+  if (!s_keyer_sequence) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "Could not load keyer PDC sequence");
+  } else {
+    const uint32_t frame_count =
+        gdraw_command_sequence_get_num_frames(s_keyer_sequence);
+    APP_LOG(APP_LOG_LEVEL_INFO,
+            "Keyer PDC: %lu frames",
+            (unsigned long)frame_count);
+  }
+
+  // The PDC was generated at 200x228 logical pixels, matching Emery.
+  // Draw it at its original coordinates so the bird and sounder stay
+  // perfectly aligned as a single animation.
+  s_art_layer = layer_create(bounds);
   layer_set_update_proc(s_art_layer, art_update_proc);
   layer_add_child(root, s_art_layer);
+  keyer_anim_reset();
 
   s_message_layer = text_layer_create(
       GRect(3, STATUS_BAR_LAYER_HEIGHT + 100,
@@ -501,6 +611,11 @@ static void main_window_unload(Window *window) {
     s_art_layer = NULL;
   }
 
+  if (s_keyer_sequence) {
+    gdraw_command_sequence_destroy(s_keyer_sequence);
+    s_keyer_sequence = NULL;
+  }
+
   if (s_rail_layer) {
     layer_destroy(s_rail_layer);
     s_rail_layer = NULL;
@@ -511,6 +626,7 @@ static void main_window_appear(Window *window) {
   (void)window;
   refresh_timing();
   s_active = true;
+  keyer_anim_reset();
 
   if (s_rail_layer) {
     layer_mark_dirty(s_rail_layer);
