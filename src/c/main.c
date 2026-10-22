@@ -170,9 +170,13 @@ static uint16_t s_straight_unit_ms;
 #define DISPLAY_LINE_COUNT 3
 #define DISPLAY_TEXT_CAP (DISPLAY_LINE_COUNT * (TX_TEXT_CAP + 1))
 
-// Newest decoded line is row 1; completed rows move down on overflow.
+// Newest decoded line is row 0 (drawn on top). Completed rows move down
+// on overflow, and an unfinished word moves with the new row.
 static char s_lines[DISPLAY_LINE_COUNT][TX_TEXT_CAP + 1];
 static size_t s_line_lengths[DISPLAY_LINE_COUNT];
+// Set when a word space itself does not fit, so the next letter starts
+// a new row instead of being glued onto the previous word.
+static bool s_row_break_pending;
 static char s_display_text[DISPLAY_TEXT_CAP];
 static int16_t s_message_width;
 static char s_code[TX_CODE_CAP + 1];
@@ -452,6 +456,17 @@ static int16_t measured_text_width(const char *text) {
   return size.w;
 }
 
+static bool line_fits_with(char value) {
+  const size_t length = s_line_lengths[0];
+  if (length >= TX_TEXT_CAP) return false;
+
+  char candidate[TX_TEXT_CAP + 1];
+  memcpy(candidate, s_lines[0], length);
+  candidate[length] = value;
+  candidate[length + 1] = '\0';
+  return measured_text_width(candidate) <= s_message_width;
+}
+
 static void scroll_lines_down(void) {
   for (int row = DISPLAY_LINE_COUNT - 1; row > 0; --row) {
     memcpy(s_lines[row], s_lines[row - 1], sizeof(s_lines[row]));
@@ -461,29 +476,64 @@ static void scroll_lines_down(void) {
   s_line_lengths[0] = 0;
 }
 
-static void append_text(char value) {
-  // Do not start a new line with a space. If the current line is full,
-  // the next actual character triggers the downward shift.
-  if (value == ' ' &&
-      (s_line_lengths[0] == 0 ||
-       s_lines[0][s_line_lengths[0] - 1] == ' ')) {
-    return;
+// The newest row cannot hold value. Shift completed text down and, when
+// the overflow is mid-word, carry that word onto the new top row.
+static void make_room_for(char value) {
+  size_t word_start = s_line_lengths[0];
+  while (word_start > 0 && s_lines[0][word_start - 1] != ' ') {
+    --word_start;
   }
 
-  char candidate[TX_TEXT_CAP + 1];
-  const size_t current_length = s_line_lengths[0];
-  if (current_length < TX_TEXT_CAP) {
-    memcpy(candidate, s_lines[0], current_length);
-    candidate[current_length] = value;
-    candidate[current_length + 1] = '\0';
-  } else {
-    candidate[0] = '\0';
+  char carried[TX_TEXT_CAP + 1];
+  size_t carried_length = 0;
+  const bool word_continues =
+      word_start > 0 && word_start < s_line_lengths[0];
+  if (word_continues) {
+    carried_length = s_line_lengths[0] - word_start;
+    memcpy(carried, s_lines[0] + word_start, carried_length);
+    carried[carried_length] = '\0';
+
+    const size_t keep = word_start - 1; // drop the separating space
+    s_lines[0][keep] = '\0';
+    s_line_lengths[0] = keep;
+  } else if (s_line_lengths[0] > 0 &&
+             s_lines[0][s_line_lengths[0] - 1] == ' ') {
+    s_lines[0][--s_line_lengths[0]] = '\0';
   }
 
-  if (current_length >= TX_TEXT_CAP ||
-      measured_text_width(candidate) > s_message_width) {
-    if (value == ' ') return;
+  scroll_lines_down();
+
+  if (carried_length > 0) {
+    memcpy(s_lines[0], carried, carried_length + 1);
+    s_line_lengths[0] = carried_length;
+  }
+
+  // A single word longer than the row still has to break.
+  if (s_line_lengths[0] > 0 && !line_fits_with(value)) {
     scroll_lines_down();
+  }
+}
+
+static void append_text(char value) {
+  // Do not start a new line with a space. A space that does not fit marks
+  // a row break so the following word starts the next row whole.
+  if (value == ' ') {
+    if (s_row_break_pending ||
+        s_line_lengths[0] == 0 ||
+        s_lines[0][s_line_lengths[0] - 1] == ' ') {
+      return;
+    }
+    if (!line_fits_with(' ')) {
+      s_row_break_pending = true;
+      return;
+    }
+  }
+
+  if (s_row_break_pending) {
+    s_row_break_pending = false;
+    scroll_lines_down();
+  } else if (!line_fits_with(value)) {
+    make_room_for(value);
   }
 
   if (s_line_lengths[0] < TX_TEXT_CAP) {
@@ -821,6 +871,7 @@ static void clear_message(void) {
   // Clear visible text and any undecoded Morse buffered for the next letter.
   memset(s_lines, 0, sizeof(s_lines));
   memset(s_line_lengths, 0, sizeof(s_line_lengths));
+  s_row_break_pending = false;
   s_display_text[0] = '\0';
   s_code[0] = '\0';
   s_code_length = 0;
@@ -895,8 +946,9 @@ static void main_window_load(Window *window) {
 
   keyer_anim_reset();
 
-  // Three explicit rows: new text stays on row 1. When it no longer fits,
-  // the previous rows shift down and the next character starts at column 1.
+  // Three explicit rows: new text stays on the top row. When the next
+  // character would overflow, finished words shift down. The unfinished
+  // word moves with that character so it is not split across rows.
   s_message_layer = text_layer_create(
       GRect(3, 128,
             content_width - 6,
@@ -1595,6 +1647,7 @@ static void init(void) {
 
   memset(s_lines, 0, sizeof(s_lines));
   memset(s_line_lengths, 0, sizeof(s_line_lengths));
+  s_row_break_pending = false;
   s_display_text[0] = '\0';
   s_code[0] = '\0';
   s_code_length = 0;

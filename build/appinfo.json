@@ -1,0 +1,103 @@
+{
+    "displayName": "Morse Bird",
+    "uuid": "c35c36ea-e184-4fb0-9e3f-b5a1c6d2f9a4",
+    "sdkVersion": "3",
+    "targetPlatforms": [
+        "emery"
+    ],
+    "watchapp": {
+        "watchface": false
+    },
+    "resources": {
+        "media": [
+            {
+                "type": "bitmap",
+                "name": "ICON_DIT",
+                "file": "images/dit.png"
+            },
+            {
+                "type": "bitmap",
+                "name": "ICON_DAH",
+                "file": "images/dah.png"
+            },
+            {
+                "type": "bitmap",
+                "name": "KEYER_FRAME_001",
+                "file": "images/keyer/001.png"
+            },
+            {
+                "type": "bitmap",
+                "name": "KEYER_FRAME_002",
+                "file": "images/keyer/002.png"
+            },
+            {
+                "type": "bitmap",
+                "name": "KEYER_FRAME_003",
+                "file": "images/keyer/003.png"
+            },
+            {
+                "type": "bitmap",
+                "name": "KEYER_FRAME_004",
+                "file": "images/keyer/004.png"
+            },
+            {
+                "type": "bitmap",
+                "name": "KEYER_FRAME_005",
+                "file": "images/keyer/005.png"
+            },
+            {
+                "type": "bitmap",
+                "name": "KEYER_FRAME_006",
+                "file": "images/keyer/006.png"
+            },
+            {
+                "type": "bitmap",
+                "name": "KEYER_FRAME_007",
+                "file": "images/keyer/007.png"
+            },
+            {
+                "type": "bitmap",
+                "name": "KEYER_FRAME_008",
+                "file": "images/keyer/008.png"
+            },
+            {
+                "type": "bitmap",
+                "name": "KEYER_FRAME_009",
+                "file": "images/keyer/009.png"
+            },
+            {
+                "type": "bitmap",
+                "name": "KEYER_FRAME_010",
+                "file": "images/keyer/010.png"
+            },
+            {
+                "type": "bitmap",
+                "name": "KEYER_FRAME_011",
+                "file": "images/keyer/011.png"
+            },
+            {
+                "type": "bitmap",
+                "name": "KEYER_FRAME_012",
+                "file": "images/keyer/012.png"
+            },
+            {
+                "type": "bitmap",
+                "name": "KEYER_FRAME_013",
+                "file": "images/keyer/013.png"
+            },
+            {
+                "type": "bitmap",
+                "name": "KEYER_FRAME_014",
+                "file": "images/keyer/014.png"
+            }
+        ]
+    },
+    "name": "morse-bird",
+    "shortName": "Morse Bird",
+    "longName": "Morse Bird",
+    "versionLabel": "0.1.0",
+    "companyName": "Darachnid",
+    "messageKeys": {},
+    "appKeys": {},
+    "capabilities": []
+}

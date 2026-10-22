@@ -51,7 +51,7 @@ Go to **Settings → Keying mode** to switch from Paddle to **Straight key**. Th
 The main screen uses Pebble-blue with the bird and sounder above **three rows of white decoded text**. There is no header or filled sidebar.
 
 - **New characters appear on the top row.**
-- The current row fills from left to right. When the *next* character would exceed the available width, the finished top row moves down, the previous middle row moves to the bottom, and the next character starts again at the left of the top row.
+- The current row fills from left to right. When the next character would exceed the available width, finished words shift down and the unfinished word moves with that character, so a word is not split across rows. A word longer than a full row still breaks. On that shift, the previous middle row moves to the bottom.
 - On further overflow, the oldest bottom row disappears.
 - The app measures character width, so the number of letters per line is not fixed.
 - A recognized question mark is shown as **`?`** (Morse `..--..`). An unrecognized or overlong Morse sequence appears as **`*`**.

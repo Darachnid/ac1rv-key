@@ -35,7 +35,7 @@ The main screen uses the Morse Bird design:
 - No status bar or title/header on the sending screen
 - Small white clipped semicircle at the right edge indicating SELECT opens the menu; no sidebar bar or dit/dah icons
 - SELECT single-click opens settings; double-click clears the decoded text and any pending undecoded Morse
-- large decoded CW text, displayed in three rows with newest text on top; when the current row fills, rows shift downward and the next character starts at column 1
+- large decoded CW text, displayed in three rows with newest text on top; when the current row fills, rows shift downward. A word that does not fit stays whole and becomes the first word on the new top row
 - unknown/undecodable Morse sequences display as `*`
 - only the white SELECT semicircle remains at the right edge; dit/dah rail icons are omitted and text uses the full screen width
 
